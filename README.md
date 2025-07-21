@@ -30,6 +30,19 @@ A comprehensive FastAPI-based business management platform with advanced user ma
 - Logging and monitoring capabilities
 - Backup and maintenance features
 
+### 🗄️ Database Management
+- View all MongoDB databases
+- Create database backups using mongodump
+- Restore databases from backups using mongorestore
+- Delete databases and backup folders
+- Real-time database status monitoring
+- Backup folder management with empty folder detection
+- Legacy backup support: `Backups/DDMMYYYY/Pinaka/` (Pinaka is the database name)
+- New backup format: `Backups/DDMMYYYY/Pinaka/` (same as legacy)
+- Restore format: `prefix_YYYYMMDD` (converts DDMMYYYY to YYYYMMDD)
+- Date display in DD/MM/YYYY format for user-friendly reading
+- Database prefix for restored databases (configurable via DATABASE_PREFIX in .env)
+
 ## Tech Stack
 
 - **Backend**: FastAPI (Python)
@@ -46,6 +59,9 @@ A comprehensive FastAPI-based business management platform with advanced user ma
 - Python 3.8+
 - MongoDB (local or cloud instance)
 - pip (Python package manager)
+- MongoDB Database Tools (for backup/restore functionality)
+  - `mongodump` and `mongorestore` commands must be available in PATH
+  - Install from: https://docs.mongodb.com/database-tools/installation/
 
 ### 1. Clone the Repository
 ```bash
@@ -82,6 +98,7 @@ ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 SUPER_ADMIN_EMAIL=admin@swsauda.com
 SUPER_ADMIN_PASSWORD=admin123
+DATABASE_PREFIX=nifty
 ```
 
 ### 4. Start MongoDB
@@ -118,6 +135,14 @@ The application will be available at `http://localhost:8000`
 - `PUT /api/profile` - Update profile
 - `PUT /api/profile/password` - Change password
 
+### Database Management (Admin Only)
+- `GET /api/databases` - Get all MongoDB databases
+- `DELETE /api/databases/{database_name}` - Delete a database
+- `GET /api/backups` - Get list of backup folders
+- `POST /api/backups/{database_name}` - Create backup of a database
+- `POST /api/restore/{database_name}` - Restore database from backup
+- `DELETE /api/backups/{backup_folder}` - Delete a backup folder
+
 ### Frontend Pages
 - `GET /` - Landing page
 - `GET /login` - Login page
@@ -126,6 +151,7 @@ The application will be available at `http://localhost:8000`
 - `GET /settings` - Settings page
 - `GET /users` - Users management
 - `GET /roles` - Roles management
+- `GET /databases` - Database management
 
 ## User Roles & Permissions
 
@@ -136,6 +162,7 @@ The application will be available at `http://localhost:8000`
 - Access system settings
 - View all system data
 - Manage backups and maintenance
+- Full database management access
 
 ### Admin
 - User management access
@@ -144,6 +171,7 @@ The application will be available at `http://localhost:8000`
 - Manage user roles (except super admin)
 - Access basic settings
 - View system reports
+- Database management access
 
 ### User
 - Basic access
@@ -185,7 +213,11 @@ SwSauda/
 │   ├── profile.html     # Profile page
 │   ├── settings.html    # Settings page
 │   ├── users.html       # Users management
-│   └── roles.html       # Roles management
+│   ├── roles.html       # Roles management
+│   └── databases.html   # Database management
+├── Backups/             # Backup storage directory
+│   └── DDMMYYYY/        # Date-based backup folders (legacy format)
+│       └── Pinaka/      # Database backup (Pinaka is the database name)
 └── static/              # Static files (CSS, JS)
     ├── css/
     └── js/

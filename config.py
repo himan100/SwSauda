@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     super_admin_email: str = "admin@swsauda.com"
     super_admin_password: str = "admin123"
+    database_prefix: str = "nifty"  # Prefix for restored databases
     
     # Server configuration (optional)
     host: str = "0.0.0.0"

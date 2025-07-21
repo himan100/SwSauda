@@ -3,10 +3,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBearer
-from datetime import timedelta
+from datetime import timedelta, datetime
 import os
+import subprocess
+import json
+from pathlib import Path
 
-from database import connect_to_mongo, close_mongo_connection
+from database import connect_to_mongo, close_mongo_connection, db
 from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin
@@ -165,6 +168,177 @@ async def change_password(
     
     return {"message": "Password changed successfully"}
 
+# Database management routes
+@app.get("/api/databases")
+async def get_databases(current_user: User = Depends(get_admin_user)):
+    """Get list of all MongoDB databases"""
+    try:
+        databases = await db.client.list_database_names()
+        # Filter out system databases
+        user_databases = [db_name for db_name in databases if db_name not in ['admin', 'local', 'config']]
+        return {"databases": user_databases}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching databases: {str(e)}")
+
+@app.delete("/api/databases/{database_name}")
+async def delete_database(database_name: str, current_user: User = Depends(get_admin_user)):
+    """Delete a MongoDB database"""
+    try:
+        # Prevent deletion of system databases
+        if database_name in ['admin', 'local', 'config']:
+            raise HTTPException(status_code=400, detail="Cannot delete system databases")
+        
+        # Drop the database
+        await db.client.drop_database(database_name)
+        return {"message": f"Database '{database_name}' deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting database: {str(e)}")
+
+@app.get("/api/backups")
+async def get_backups(current_user: User = Depends(get_admin_user)):
+    """Get list of backup folders"""
+    try:
+        backups_dir = Path("Backups")
+        if not backups_dir.exists():
+            return {"backups": []}
+        
+        backup_folders = []
+        for date_folder in backups_dir.iterdir():
+            if date_folder.is_dir() and date_folder.name.isdigit() and len(date_folder.name) == 8:
+                # This is a DDMMYYYY folder
+                # Look for database folders inside (like Pinaka)
+                for db_folder in date_folder.iterdir():
+                    if db_folder.is_dir():
+                        # Check if database folder has any database files (BSON files)
+                        database_files = list(db_folder.glob("*.bson"))
+                        backup_folders.append({
+                            "name": date_folder.name,  # DDMMYYYY format
+                            "path": str(date_folder),
+                            "is_empty": len(database_files) == 0,
+                            "file_count": len(database_files),
+                            "database_name": db_folder.name  # The actual database name
+                        })
+        
+        return {"backups": backup_folders}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching backups: {str(e)}")
+
+@app.post("/api/backups/{database_name}")
+async def create_backup(database_name: str, current_user: User = Depends(get_admin_user)):
+    """Create a backup of a database"""
+    try:
+        # Prevent backup of system databases
+        if database_name in ['admin', 'local', 'config']:
+            raise HTTPException(status_code=400, detail="Cannot backup system databases")
+        
+        backups_dir = Path("Backups")
+        backups_dir.mkdir(exist_ok=True)
+        
+        # Create DDMMYYYY folder
+        date_folder = backups_dir / datetime.now().strftime('%d%m%Y')
+        date_folder.mkdir(exist_ok=True)
+        
+        # Use mongodump to create backup
+        # Output to DDMMYYYY folder, which will create database_name subfolder
+        cmd = [
+            "mongodump",
+            "--db", database_name,
+            "--out", str(date_folder)  # Output to DDMMYYYY folder
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Backup failed: {result.stderr}")
+        
+        return {"message": f"Backup created successfully", "backup_path": str(pinaka_dir)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating backup: {str(e)}")
+
+from pydantic import BaseModel
+
+class RestoreRequest(BaseModel):
+    backup_folder: str
+
+@app.post("/api/restore/{database_name}")
+async def restore_database(database_name: str, restore_request: RestoreRequest, current_user: User = Depends(get_admin_user)):
+    """Restore a database from backup"""
+    try:
+        print(f"Restore request: database_name={database_name}, backup_folder={restore_request.backup_folder}")
+        
+        # Look for backup in DDMMYYYY/database_name folder
+        backup_path = Path("Backups") / restore_request.backup_folder / database_name
+        print(f"Backup path: {backup_path}")
+        
+        if not backup_path.exists():
+            print(f"Backup path does not exist: {backup_path}")
+            raise HTTPException(status_code=404, detail="Backup folder not found")
+        
+        # Check if backup folder contains BSON files
+        bson_files = list(backup_path.glob("*.bson"))
+        print(f"Found {len(bson_files)} BSON files in backup")
+        
+        if not bson_files:
+            raise HTTPException(status_code=404, detail="No backup files found in the backup folder")
+        
+        # Convert DDMMYYYY to YYYYMMDD for restored database name
+        backup_date = restore_request.backup_folder
+        if len(backup_date) == 8 and backup_date.isdigit():
+            # Convert DDMMYYYY to YYYYMMDD
+            day = int(backup_date[:2])
+            month = int(backup_date[2:4])
+            year = int(backup_date[4:8])
+            yyyymmdd = f"{year:04d}{month:02d}{day:02d}"
+        else:
+            yyyymmdd = backup_date
+        
+        # Add prefix to database name: prefix_YYYYMMDD
+        prefixed_database_name = f"{settings.database_prefix}_{yyyymmdd}"
+        print(f"Restoring to database: {prefixed_database_name}")
+        
+        # Use mongorestore to restore backup (Pinaka is the database folder)
+        cmd = [
+            "mongorestore",
+            "--db", prefixed_database_name,
+            "--drop",  # Drop existing database before restore
+            str(backup_path)  # Restore from Pinaka folder directly
+        ]
+        
+        print(f"Running command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        print(f"Command return code: {result.returncode}")
+        if result.stdout:
+            print(f"Command stdout: {result.stdout}")
+        if result.stderr:
+            print(f"Command stderr: {result.stderr}")
+        
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Restore failed: {result.stderr}")
+        
+        return {"message": f"Database '{prefixed_database_name}' restored successfully"}
+    except Exception as e:
+        print(f"Exception during restore: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error restoring database: {str(e)}")
+
+@app.delete("/api/backups/{backup_folder}")
+async def delete_backup(backup_folder: str, current_user: User = Depends(get_admin_user)):
+    """Delete a backup folder"""
+    try:
+        # Look for backup in YYYYMMDD folder
+        backup_path = Path("Backups") / backup_folder
+        
+        if not backup_path.exists():
+            raise HTTPException(status_code=404, detail="Backup folder not found")
+        
+        # Remove the backup folder and all its contents
+        import shutil
+        shutil.rmtree(backup_path)
+        
+        return {"message": f"Backup '{backup_folder}' deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting backup: {str(e)}")
+
 # Frontend routes
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request):
@@ -193,6 +367,10 @@ async def users_page(request: Request):
 @app.get("/roles", response_class=HTMLResponse)
 async def roles_page(request: Request):
     return templates.TemplateResponse("roles.html", {"request": request})
+
+@app.get("/databases", response_class=HTMLResponse)
+async def databases_page(request: Request):
+    return templates.TemplateResponse("databases.html", {"request": request})
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,555 @@
+{% extends "base.html" %}
+
+{% block title %}Databases - SwSauda{% endblock %}
+
+{% block content %}
+<div id="app" class="py-6">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h1 class="text-2xl font-semibold text-gray-900">Database Management</h1>
+        <p class="mt-2 text-sm text-gray-600">Manage your MongoDB databases and backups</p>
+        <!-- Debug info -->
+        <div class="mt-2 text-xs text-gray-500">
+            Modal state: [[ showRestore ]] | Selected backup: [[ selectedBackup ? selectedBackup.name : 'none' ]] | BackupName: [[ backupName ]] | DatabaseName: [[ databaseName ]]
+        </div>
+    </div>
+    
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Databases Section -->
+        <div class="bg-white shadow rounded-lg mb-6">
+            <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900">MongoDB Databases</h3>
+                    <button @click="refreshDatabases" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-md text-sm font-medium">
+                        Refresh
+                    </button>
+                </div>
+                
+                <div v-if="loading" class="text-center py-8">
+                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                    <p class="mt-2 text-gray-500">Loading databases...</p>
+                </div>
+                
+                <div v-else-if="databases.length === 0" class="text-center py-8">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                    </svg>
+                    <p class="mt-2 text-gray-500">No databases found</p>
+                </div>
+                
+                <div v-else class="overflow-hidden shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
+                    <table class="min-w-full divide-y divide-gray-300">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Database Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr v-for="database in databases" :key="database">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                    <div class="flex items-center">
+                                        <svg class="h-5 w-5 text-primary mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                                        </svg>
+                                        [[ database ]]
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <div class="flex space-x-2">
+                                        <button @click="createBackup(database)" class="bg-green-500 hover:bg-green-700 text-white px-3 py-1 rounded text-xs">
+                                            Backup
+                                        </button>
+                                        <button @click="deleteDatabase(database)" class="bg-red-500 hover:bg-red-700 text-white px-3 py-1 rounded text-xs">
+                                            Delete
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Backups Section -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900">Backup Folders</h3>
+                    <button @click="refreshBackups" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-md text-sm font-medium">
+                        Refresh
+                    </button>
+                </div>
+                
+                <div v-if="loadingBackups" class="text-center py-8">
+                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                    <p class="mt-2 text-gray-500">Loading backups...</p>
+                </div>
+                
+                <div v-else-if="backups.length === 0" class="text-center py-8">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
+                    </svg>
+                    <p class="mt-2 text-gray-500">No backup folders found</p>
+                </div>
+                
+                <div v-else class="overflow-hidden shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
+                    <table class="min-w-full divide-y divide-gray-300">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Backup Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr v-for="backup in backups" :key="backup.name">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                    <div class="flex items-center">
+                                        <svg class="h-5 w-5 text-accent mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
+                                        </svg>
+                                        <div>
+                                            <div class="font-medium">[[ formatBackupDate(backup.name) ]]</div>
+                                            <div class="text-xs text-gray-500">[[ backup.database_name ]]</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <span v-if="backup.is_empty" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                        No backup found
+                                    </span>
+                                    <span v-else class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                        [[ backup.file_count ]] files
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <div class="flex space-x-2">
+                                        <button v-if="!backup.is_empty" @click="showRestoreModal(backup)" class="bg-blue-500 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs">
+                                            Restore
+                                        </button>
+                                        <button @click="deleteBackup(backup.name)" class="bg-red-500 hover:bg-red-700 text-white px-3 py-1 rounded text-xs">
+                                            Delete
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Restore Modal -->
+<div id="restoreModal" v-show="true" class="restore-modal" style="display: none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Restore Database</h3>
+        </div>
+        <div class="modal-body">
+            <p>Restore database from backup: <strong id="modalBackupName"></strong></p>
+            <div class="form-group">
+                <label>Database to Restore</label>
+                <div class="form-control" id="modalDatabaseName"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button id="cancelBtn" class="btn btn-secondary">Cancel</button>
+            <button id="restoreBtn" class="btn btn-primary">Restore</button>
+        </div>
+    </div>
+</div>
+
+<!-- Success/Error Toast -->
+<div v-if="toast.show" :class="toast.type === 'success' ? 'bg-green-500' : 'bg-red-500'" class="fixed top-4 right-4 text-white px-6 py-3 rounded-md shadow-lg z-50">
+    [[ toast.message ]]
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const { createApp } = Vue;
+
+createApp({
+    delimiters: ['[[', ']]'],
+    data() {
+        return {
+            databases: [],
+            backups: [],
+            loading: false,
+            loadingBackups: false,
+            showRestore: Boolean(false), // Explicitly set as boolean
+            selectedBackup: null,
+            restoreDatabaseName: '',
+            backupName: '',
+            databaseName: '',
+            toast: {
+                show: false,
+                message: '',
+                type: 'success'
+            }
+        }
+    },
+    computed: {
+        shouldShowModal() {
+            // Only show modal if explicitly set to true AND we have backup data
+            const result = this.showRestore === true && this.backupName && this.databaseName;
+            console.log('shouldShowModal computed called:', {
+                showRestore: this.showRestore,
+                showRestoreType: typeof this.showRestore,
+                backupName: this.backupName,
+                databaseName: this.databaseName,
+                result: result,
+                timestamp: new Date().toISOString()
+            });
+            return result;
+        }
+    },
+    watch: {
+        showRestore(newVal, oldVal) {
+            console.log('showRestore changed from', oldVal, 'to', newVal);
+            if (newVal === true) {
+                console.trace('showRestore set to true - stack trace:');
+            }
+        }
+    },
+    mounted() {
+        console.log('Vue app mounted');
+        console.log('Initial showRestore value:', this.showRestore);
+        
+        // Check authentication first
+        const token = localStorage.getItem('token');
+        if (!token) {
+            console.log('No authentication token found, redirecting to login');
+            window.location.href = '/login';
+            return;
+        }
+        
+        // Force hide any existing modals immediately
+        const existingModals = document.querySelectorAll('.fixed.inset-0, .restore-modal');
+        existingModals.forEach(modal => {
+            modal.style.display = 'none';
+            modal.style.visibility = 'hidden';
+            modal.style.opacity = '0';
+            modal.classList.remove('show');
+        });
+        
+        // Ensure modal is hidden on initialization
+        this.showRestore = Boolean(false);
+        this.selectedBackup = null;
+        this.restoreDatabaseName = '';
+        this.backupName = '';
+        this.databaseName = '';
+        
+        console.log('After setting showRestore to false:', this.showRestore);
+        
+        // Load data after ensuring modal is hidden
+        this.$nextTick(() => {
+            // Check if modal element exists
+            const modal = document.getElementById('restoreModal');
+            console.log('Modal element on mount:', modal);
+            if (modal) {
+                console.log('Modal initial display:', modal.style.display);
+                console.log('Modal initial visibility:', modal.style.visibility);
+            }
+            
+            this.loadDatabases();
+            this.loadBackups();
+        });
+    },
+    methods: {
+        async loadDatabases() {
+            this.loading = true;
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) {
+                    console.log('No token found, redirecting to login');
+                    window.location.href = '/login';
+                    return;
+                }
+                
+                const response = await axios.get('/api/databases', {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                this.databases = response.data.databases;
+            } catch (error) {
+                console.error('Error loading databases:', error);
+                if (error.response?.status === 401) {
+                    console.log('Unauthorized, redirecting to login');
+                    window.location.href = '/login';
+                    return;
+                }
+                this.showToast('Error loading databases: ' + error.response?.data?.detail || error.message, 'error');
+            } finally {
+                this.loading = false;
+            }
+        },
+        
+        async loadBackups() {
+            this.loadingBackups = true;
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) {
+                    console.log('No token found, redirecting to login');
+                    window.location.href = '/login';
+                    return;
+                }
+                
+                const response = await axios.get('/api/backups', {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                console.log('Backups response:', response.data);
+                this.backups = response.data.backups;
+                console.log('Backups loaded:', this.backups);
+                
+                // Check if any backup has unexpected properties
+                this.backups.forEach((backup, index) => {
+                    console.log(`Backup ${index}:`, backup);
+                    if (backup.showRestore || backup.modal) {
+                        console.warn('Backup has modal-related property:', backup);
+                        // Remove any modal-related properties to prevent accidental triggering
+                        delete backup.showRestore;
+                        delete backup.modal;
+                    }
+                });
+                
+                // Check modal state after loading backups
+                console.log('Modal state after loading backups:', {
+                    showRestore: this.showRestore,
+                    showRestoreType: typeof this.showRestore
+                });
+            } catch (error) {
+                console.error('Error loading backups:', error);
+                if (error.response?.status === 401) {
+                    console.log('Unauthorized, redirecting to login');
+                    window.location.href = '/login';
+                    return;
+                }
+                this.showToast('Error loading backups: ' + error.response?.data?.detail || error.message, 'error');
+            } finally {
+                this.loadingBackups = false;
+            }
+        },
+        
+        async refreshDatabases() {
+            await this.loadDatabases();
+        },
+        
+        async refreshBackups() {
+            await this.loadBackups();
+        },
+        
+        async deleteDatabase(databaseName) {
+            if (!confirm(`Are you sure you want to delete the database '${databaseName}'? This action cannot be undone.`)) {
+                return;
+            }
+            
+            try {
+                const token = localStorage.getItem('token');
+                await axios.delete(`/api/databases/${databaseName}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                this.showToast(`Database '${databaseName}' deleted successfully`, 'success');
+                await this.loadDatabases();
+            } catch (error) {
+                this.showToast('Error deleting database: ' + error.response?.data?.detail || error.message, 'error');
+            }
+        },
+        
+        async createBackup(databaseName) {
+            try {
+                const token = localStorage.getItem('token');
+                await axios.post(`/api/backups/${databaseName}`, {}, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                this.showToast(`Backup created successfully for '${databaseName}'`, 'success');
+                await this.loadBackups();
+            } catch (error) {
+                this.showToast('Error creating backup: ' + error.response?.data?.detail || error.message, 'error');
+            }
+        },
+        
+        showRestoreModal(backup) {
+            console.log('showRestoreModal called with:', backup);
+            
+            // Set the data
+            this.selectedBackup = backup;
+            this.backupName = backup.name;
+            this.databaseName = backup.database_name;
+            this.restoreDatabaseName = backup.database_name;
+            
+            // Show modal using DOM manipulation
+            this.$nextTick(() => {
+                const modal = document.getElementById('restoreModal');
+                console.log('Modal element found:', modal);
+                
+                if (modal) {
+                    // Update modal content
+                    const backupNameEl = document.getElementById('modalBackupName');
+                    const databaseNameEl = document.getElementById('modalDatabaseName');
+                    
+                    console.log('Backup name element:', backupNameEl);
+                    console.log('Database name element:', databaseNameEl);
+                    
+                    if (backupNameEl) backupNameEl.textContent = backup.name;
+                    if (databaseNameEl) databaseNameEl.textContent = backup.database_name;
+                    
+                    // Show modal
+                    modal.classList.add('show');
+                    modal.style.display = 'block';
+                    modal.style.visibility = 'visible';
+                    modal.style.opacity = '1';
+                    
+                    // Add event listeners to buttons
+                    const cancelBtn = document.getElementById('cancelBtn');
+                    const restoreBtn = document.getElementById('restoreBtn');
+                    
+                    if (cancelBtn) {
+                        cancelBtn.onclick = () => {
+                            console.log('Cancel button clicked');
+                            this.closeRestoreModal();
+                        };
+                    }
+                    
+                    if (restoreBtn) {
+                        restoreBtn.onclick = () => {
+                            console.log('Restore button clicked');
+                            this.restoreDatabase();
+                        };
+                    }
+                    
+                    console.log('Modal shown via DOM manipulation');
+                    console.log('Modal display style:', modal.style.display);
+                    console.log('Modal visibility style:', modal.style.visibility);
+                } else {
+                    console.error('Modal element not found');
+                }
+            });
+        },
+        
+        formatBackupDate(backupName) {
+            // Show DDMMYYYY format as-is (no formatting)
+            return backupName;
+        },
+        
+        closeRestoreModal() {
+            // Hide modal using DOM manipulation
+            const modal = document.getElementById('restoreModal');
+            if (modal) {
+                modal.classList.remove('show');
+                modal.style.display = 'none';
+                modal.style.visibility = 'hidden';
+                modal.style.opacity = '0';
+            }
+            
+            // Remove event listeners
+            const cancelBtn = document.getElementById('cancelBtn');
+            const restoreBtn = document.getElementById('restoreBtn');
+            
+            if (cancelBtn) cancelBtn.onclick = null;
+            if (restoreBtn) restoreBtn.onclick = null;
+            
+            // Reset data
+            this.showRestore = false;
+            this.selectedBackup = null;
+            this.restoreDatabaseName = '';
+            this.backupName = '';
+            this.databaseName = '';
+            
+            console.log('Modal closed via DOM manipulation');
+        },
+        
+        async restoreDatabase() {
+            console.log('restoreDatabase called');
+            console.log('Current state:', {
+                restoreDatabaseName: this.restoreDatabaseName,
+                selectedBackup: this.selectedBackup
+            });
+            
+            if (!this.selectedBackup || !this.selectedBackup.database_name) {
+                this.showToast('Please select a database to restore from the backup list', 'error');
+                return;
+            }
+            
+            // Convert DDMMYYYY to YYYYMMDD for the restored database name
+            const backupDate = this.selectedBackup.name;
+            
+            // Check if this is a test backup
+            if (backupDate === 'Test Backup') {
+                this.showToast('This is a test backup. Please use a real backup from the list.', 'error');
+                return;
+            }
+            
+            const day = parseInt(backupDate.substring(0, 2));
+            const month = parseInt(backupDate.substring(2, 4));
+            const year = parseInt(backupDate.substring(4, 8));
+            const yyyymmdd = `${year.toString().padStart(4, '0')}${month.toString().padStart(2, '0')}${day.toString().padStart(2, '0')}`;
+            
+            const prefixedName = `nifty_${yyyymmdd}`;
+            if (!confirm(`Are you sure you want to restore database '${prefixedName}' from backup? This will overwrite the existing database if it exists.`)) {
+                return;
+            }
+            
+            try {
+                const token = localStorage.getItem('token');
+                console.log('Restoring database:', {
+                    databaseName: this.selectedBackup.database_name,
+                    backupFolder: this.selectedBackup.name,
+                    prefixedName: prefixedName
+                });
+                
+                // Use the original database name from the backup for the API call
+                const response = await axios.post(`/api/restore/${this.selectedBackup.database_name}`, {
+                    backup_folder: this.selectedBackup.name
+                }, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                
+                console.log('Restore response:', response.data);
+                this.showToast(`Database '${prefixedName}' restored successfully`, 'success');
+                this.closeRestoreModal();
+                await this.loadDatabases();
+            } catch (error) {
+                console.error('Restore error:', error);
+                this.showToast('Error restoring database: ' + error.response?.data?.detail || error.message, 'error');
+            }
+        },
+        
+        async deleteBackup(backupName) {
+            if (!confirm(`Are you sure you want to delete the backup '${backupName}'?`)) {
+                return;
+            }
+            
+            try {
+                const token = localStorage.getItem('token');
+                await axios.delete(`/api/backups/${backupName}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                this.showToast(`Backup '${backupName}' deleted successfully`, 'success');
+                await this.loadBackups();
+            } catch (error) {
+                this.showToast('Error deleting backup: ' + error.response?.data?.detail || error.message, 'error');
+            }
+        },
+        
+
+        
+
+        
+        showToast(message, type = 'success') {
+            this.toast = {
+                show: true,
+                message,
+                type
+            };
+            setTimeout(() => {
+                this.toast.show = false;
+            }, 3000);
+        }
+    }
+}).mount('#app');
+</script>
+{% endblock %} 
