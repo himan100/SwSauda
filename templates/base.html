@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SwSauda{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3B82F6',
+                        secondary: '#1E40AF',
+                        accent: '#F59E0B'
+                    }
+                }
+            }
+        }
+    </script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-2xl font-bold text-primary">SwSauda</a>
+                </div>
+                <div class="flex items-center space-x-4" id="nav-links">
+                    <a href="/" class="text-gray-700 hover:text-primary px-3 py-2 rounded-md text-sm font-medium">Home</a>
+                    <a href="/dashboard" class="text-gray-700 hover:text-primary px-3 py-2 rounded-md text-sm font-medium">Dashboard</a>
+                    <a href="/profile" class="text-gray-700 hover:text-primary px-3 py-2 rounded-md text-sm font-medium">Profile</a>
+                    <a href="/settings" class="text-gray-700 hover:text-primary px-3 py-2 rounded-md text-sm font-medium">Settings</a>
+                    <a href="/users" class="text-gray-700 hover:text-primary px-3 py-2 rounded-md text-sm font-medium">Users</a>
+                    <a href="/roles" class="text-gray-700 hover:text-primary px-3 py-2 rounded-md text-sm font-medium">Roles</a>
+                    <button onclick="logout()" class="bg-red-500 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium">Logout</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-gray-200 mt-auto">
+        <div class="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8">
+            <p class="text-center text-gray-500 text-sm">
+                © 2024 SwSauda. All rights reserved.
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        // Check authentication status
+        function checkAuth() {
+            const token = localStorage.getItem('token');
+            const navLinks = document.getElementById('nav-links');
+            
+            if (!token) {
+                // Hide protected links and show login
+                navLinks.innerHTML = `
+                    <a href="/login" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-md text-sm font-medium">Login</a>
+                `;
+            }
+        }
+
+        // Logout function
+        function logout() {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            window.location.href = '/login';
+        }
+
+        // Initialize auth check
+        checkAuth();
+    </script>
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html> 

@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+
+{% block title %}Profile - SwSauda{% endblock %}
+
+{% block content %}
+<div class="py-6">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h1 class="text-2xl font-semibold text-gray-900">Profile</h1>
+    </div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <!-- Profile Information -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Profile Information</h3>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Full Name</label>
+                            <input type="text" id="full-name" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm" disabled>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Email</label>
+                            <input type="email" id="email" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm" disabled>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Role</label>
+                            <input type="text" id="role" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-gray-50" disabled>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Status</label>
+                            <input type="text" id="status" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-gray-50" disabled>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Member Since</label>
+                            <input type="text" id="created-at" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-gray-50" disabled>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-6">
+                        <button type="button" id="edit-profile-btn" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-md text-sm font-medium">
+                            Edit Profile
+                        </button>
+                        <button type="button" id="save-profile-btn" class="hidden bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium ml-2">
+                            Save Changes
+                        </button>
+                        <button type="button" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-md text-sm font-medium ml-2">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Change Password -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Change Password</h3>
+                    
+                    <form id="password-form" class="space-y-4">
+                        <div>
+                            <label for="current-password" class="block text-sm font-medium text-gray-700">Current Password</label>
+                            <input type="password" id="current-password" name="current-password" required 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        
+                        <div>
+                            <label for="new-password" class="block text-sm font-medium text-gray-700">New Password</label>
+                            <input type="password" id="new-password" name="new-password" required 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        
+                        <div>
+                            <label for="confirm-password" class="block text-sm font-medium text-gray-700">Confirm New Password</label>
+                            <input type="password" id="confirm-password" name="confirm-password" required 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        
+                        <div>
+                            <button type="submit" class="bg-accent hover:bg-yellow-600 text-white px-4 py-2 rounded-md text-sm font-medium">
+                                Change Password
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div id="success-message" class="hidden mt-4 bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative" role="alert">
+            <span class="block sm:inline" id="success-text"></span>
+        </div>
+
+        <div id="error-message" class="hidden mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+            <span class="block sm:inline" id="error-text"></span>
+        </div>
+    </div>
+</div>
+
+<script>
+let isEditing = false;
+let originalData = {};
+
+// Load profile data
+async function loadProfile() {
+    const token = localStorage.getItem('token');
+    if (!token) {
+        window.location.href = '/login';
+        return;
+    }
+
+    try {
+        const response = await axios.get('/api/profile', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        const user = response.data;
+        originalData = { ...user };
+        
+        // Populate form fields
+        document.getElementById('full-name').value = user.full_name;
+        document.getElementById('email').value = user.email;
+        document.getElementById('role').value = user.role.replace('_', ' ').toUpperCase();
+        document.getElementById('status').value = user.is_active ? 'Active' : 'Inactive';
+        document.getElementById('created-at').value = new Date(user.created_at).toLocaleDateString();
+        
+    } catch (error) {
+        console.error('Error loading profile:', error);
+        if (error.response?.status === 401) {
+            localStorage.removeItem('token');
+            window.location.href = '/login';
+        }
+    }
+}
+
+// Toggle edit mode
+function toggleEditMode() {
+    const fullNameInput = document.getElementById('full-name');
+    const emailInput = document.getElementById('email');
+    const editBtn = document.getElementById('edit-profile-btn');
+    const saveBtn = document.getElementById('save-profile-btn');
+    const cancelBtn = document.getElementById('cancel-edit-btn');
+    
+    if (!isEditing) {
+        // Enable editing
+        fullNameInput.disabled = false;
+        emailInput.disabled = false;
+        editBtn.classList.add('hidden');
+        saveBtn.classList.remove('hidden');
+        cancelBtn.classList.remove('hidden');
+        isEditing = true;
+    } else {
+        // Disable editing
+        fullNameInput.disabled = true;
+        emailInput.disabled = true;
+        editBtn.classList.remove('hidden');
+        saveBtn.classList.add('hidden');
+        cancelBtn.classList.add('hidden');
+        isEditing = false;
+        
+        // Restore original values
+        fullNameInput.value = originalData.full_name;
+        emailInput.value = originalData.email;
+    }
+}
+
+// Save profile changes
+async function saveProfile() {
+    const token = localStorage.getItem('token');
+    const fullName = document.getElementById('full-name').value;
+    const email = document.getElementById('email').value;
+    
+    try {
+        const response = await axios.put('/api/profile', {
+            full_name: fullName,
+            email: email
+        }, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        // Update original data
+        originalData = response.data;
+        
+        // Show success message
+        showMessage('Profile updated successfully!', 'success');
+        
+        // Exit edit mode
+        toggleEditMode();
+        
+    } catch (error) {
+        console.error('Error updating profile:', error);
+        showMessage(error.response?.data?.detail || 'Failed to update profile', 'error');
+    }
+}
+
+// Handle password change
+async function handlePasswordChange(e) {
+    e.preventDefault();
+    
+    const token = localStorage.getItem('token');
+    const currentPassword = document.getElementById('current-password').value;
+    const newPassword = document.getElementById('new-password').value;
+    const confirmPassword = document.getElementById('confirm-password').value;
+    
+    if (newPassword !== confirmPassword) {
+        showMessage('New passwords do not match', 'error');
+        return;
+    }
+    
+    try {
+        await axios.put('/api/profile/password', {
+            current_password: currentPassword,
+            new_password: newPassword
+        }, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        showMessage('Password changed successfully!', 'success');
+        document.getElementById('password-form').reset();
+        
+    } catch (error) {
+        console.error('Error changing password:', error);
+        showMessage(error.response?.data?.detail || 'Failed to change password', 'error');
+    }
+}
+
+// Show message
+function showMessage(message, type) {
+    const successMessage = document.getElementById('success-message');
+    const errorMessage = document.getElementById('error-message');
+    const successText = document.getElementById('success-text');
+    const errorText = document.getElementById('error-text');
+    
+    // Hide both messages
+    successMessage.classList.add('hidden');
+    errorMessage.classList.add('hidden');
+    
+    if (type === 'success') {
+        successText.textContent = message;
+        successMessage.classList.remove('hidden');
+    } else {
+        errorText.textContent = message;
+        errorMessage.classList.remove('hidden');
+    }
+    
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+        successMessage.classList.add('hidden');
+        errorMessage.classList.add('hidden');
+    }, 5000);
+}
+
+// Event listeners
+document.addEventListener('DOMContentLoaded', function() {
+    loadProfile();
+    
+    document.getElementById('edit-profile-btn').addEventListener('click', toggleEditMode);
+    document.getElementById('save-profile-btn').addEventListener('click', saveProfile);
+    document.getElementById('cancel-edit-btn').addEventListener('click', toggleEditMode);
+    document.getElementById('password-form').addEventListener('submit', handlePasswordChange);
+});
+</script>
+{% endblock %} 

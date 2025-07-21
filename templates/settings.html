@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - SwSauda{% endblock %}
+
+{% block content %}
+<div class="py-6">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h1 class="text-2xl font-semibold text-gray-900">Settings</h1>
+    </div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <!-- System Settings -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">System Settings</h3>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">System Name</label>
+                            <input type="text" id="system-name" value="SwSauda" 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm" disabled>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Version</label>
+                            <input type="text" id="version" value="1.0.0" 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-gray-50" disabled>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Database Status</label>
+                            <div class="mt-1 flex items-center">
+                                <div class="h-2 w-2 bg-green-400 rounded-full mr-2"></div>
+                                <span class="text-sm text-gray-900">Connected</span>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Last Backup</label>
+                            <input type="text" id="last-backup" value="Never" 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm bg-gray-50" disabled>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Security Settings -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Security Settings</h3>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Session Timeout (minutes)</label>
+                            <input type="number" id="session-timeout" value="30" min="5" max="480" 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Password Policy</label>
+                            <div class="mt-2 space-y-2">
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="require-uppercase" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                    <span class="ml-2 text-sm text-gray-700">Require uppercase letters</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="require-numbers" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                    <span class="ml-2 text-sm text-gray-700">Require numbers</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="require-special" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                    <span class="ml-2 text-sm text-gray-700">Require special characters</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Minimum Password Length</label>
+                            <input type="number" id="min-password-length" value="8" min="6" max="20" 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Notification Settings -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Notification Settings</h3>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="email-notifications" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                <span class="ml-2 text-sm text-gray-700">Email notifications</span>
+                            </label>
+                        </div>
+                        
+                        <div>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="login-alerts" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                <span class="ml-2 text-sm text-gray-700">Login alerts</span>
+                            </label>
+                        </div>
+                        
+                        <div>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="user-activity" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                <span class="ml-2 text-sm text-gray-700">User activity reports</span>
+                            </label>
+                        </div>
+                        
+                        <div>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="system-updates" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                <span class="ml-2 text-sm text-gray-700">System update notifications</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backup Settings -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Backup & Maintenance</h3>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="auto-backup" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                <span class="ml-2 text-sm text-gray-700">Automatic backups</span>
+                            </label>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Backup Frequency</label>
+                            <select id="backup-frequency" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Retention Period (days)</label>
+                            <input type="number" id="retention-period" value="30" min="1" max="365" 
+                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        
+                        <div>
+                            <button type="button" id="manual-backup-btn" class="bg-accent hover:bg-yellow-600 text-white px-4 py-2 rounded-md text-sm font-medium">
+                                Create Manual Backup
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Save Button -->
+        <div class="mt-6 flex justify-end">
+            <button type="button" id="save-settings-btn" class="bg-primary hover:bg-secondary text-white px-6 py-2 rounded-md text-sm font-medium">
+                Save Settings
+            </button>
+        </div>
+
+        <!-- Messages -->
+        <div id="success-message" class="hidden mt-4 bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative" role="alert">
+            <span class="block sm:inline" id="success-text"></span>
+        </div>
+
+        <div id="error-message" class="hidden mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+            <span class="block sm:inline" id="error-text"></span>
+        </div>
+    </div>
+</div>
+
+<script>
+// Load settings
+async function loadSettings() {
+    const token = localStorage.getItem('token');
+    if (!token) {
+        window.location.href = '/login';
+        return;
+    }
+
+    // For now, we'll use default values
+    // In a real application, these would be loaded from the backend
+    const defaultSettings = {
+        sessionTimeout: 30,
+        requireUppercase: true,
+        requireNumbers: true,
+        requireSpecial: false,
+        minPasswordLength: 8,
+        emailNotifications: true,
+        loginAlerts: false,
+        userActivity: true,
+        systemUpdates: true,
+        autoBackup: false,
+        backupFrequency: 'weekly',
+        retentionPeriod: 30
+    };
+
+    // Apply default settings
+    document.getElementById('session-timeout').value = defaultSettings.sessionTimeout;
+    document.getElementById('require-uppercase').checked = defaultSettings.requireUppercase;
+    document.getElementById('require-numbers').checked = defaultSettings.requireNumbers;
+    document.getElementById('require-special').checked = defaultSettings.requireSpecial;
+    document.getElementById('min-password-length').value = defaultSettings.minPasswordLength;
+    document.getElementById('email-notifications').checked = defaultSettings.emailNotifications;
+    document.getElementById('login-alerts').checked = defaultSettings.loginAlerts;
+    document.getElementById('user-activity').checked = defaultSettings.userActivity;
+    document.getElementById('system-updates').checked = defaultSettings.systemUpdates;
+    document.getElementById('auto-backup').checked = defaultSettings.autoBackup;
+    document.getElementById('backup-frequency').value = defaultSettings.backupFrequency;
+    document.getElementById('retention-period').value = defaultSettings.retentionPeriod;
+}
+
+// Save settings
+async function saveSettings() {
+    const token = localStorage.getItem('token');
+    
+    const settings = {
+        sessionTimeout: parseInt(document.getElementById('session-timeout').value),
+        requireUppercase: document.getElementById('require-uppercase').checked,
+        requireNumbers: document.getElementById('require-numbers').checked,
+        requireSpecial: document.getElementById('require-special').checked,
+        minPasswordLength: parseInt(document.getElementById('min-password-length').value),
+        emailNotifications: document.getElementById('email-notifications').checked,
+        loginAlerts: document.getElementById('login-alerts').checked,
+        userActivity: document.getElementById('user-activity').checked,
+        systemUpdates: document.getElementById('system-updates').checked,
+        autoBackup: document.getElementById('auto-backup').checked,
+        backupFrequency: document.getElementById('backup-frequency').value,
+        retentionPeriod: parseInt(document.getElementById('retention-period').value)
+    };
+
+    try {
+        // In a real application, this would be sent to the backend
+        console.log('Saving settings:', settings);
+        
+        // Simulate API call
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        showMessage('Settings saved successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error saving settings:', error);
+        showMessage('Failed to save settings', 'error');
+    }
+}
+
+// Create manual backup
+async function createManualBackup() {
+    const token = localStorage.getItem('token');
+    
+    try {
+        // In a real application, this would trigger a backup on the backend
+        console.log('Creating manual backup...');
+        
+        // Simulate backup process
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        showMessage('Backup created successfully!', 'success');
+        
+        // Update last backup time
+        document.getElementById('last-backup').value = new Date().toLocaleString();
+        
+    } catch (error) {
+        console.error('Error creating backup:', error);
+        showMessage('Failed to create backup', 'error');
+    }
+}
+
+// Show message
+function showMessage(message, type) {
+    const successMessage = document.getElementById('success-message');
+    const errorMessage = document.getElementById('error-message');
+    const successText = document.getElementById('success-text');
+    const errorText = document.getElementById('error-text');
+    
+    // Hide both messages
+    successMessage.classList.add('hidden');
+    errorMessage.classList.add('hidden');
+    
+    if (type === 'success') {
+        successText.textContent = message;
+        successMessage.classList.remove('hidden');
+    } else {
+        errorText.textContent = message;
+        errorMessage.classList.remove('hidden');
+    }
+    
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+        successMessage.classList.add('hidden');
+        errorMessage.classList.add('hidden');
+    }, 5000);
+}
+
+// Event listeners
+document.addEventListener('DOMContentLoaded', function() {
+    loadSettings();
+    
+    document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
+    document.getElementById('manual-backup-btn').addEventListener('click', createManualBackup);
+});
+</script>
+{% endblock %} 
