@@ -7,7 +7,7 @@ from datetime import timedelta
 import os
 
 from database import connect_to_mongo, close_mongo_connection
-from models import UserCreate, UserUpdate, LoginRequest, Token, User, ProfileUpdate, PasswordChange
+from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin
 from config import settings
@@ -152,13 +152,12 @@ async def update_profile(
 @app.put("/api/profile/password")
 async def change_password(
     password_change: PasswordChange,
-    current_user: User = Depends(get_current_active_user)
+    current_user: UserInDB = Depends(get_current_active_user)
 ):
     if not verify_password(password_change.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     
-    user_update = UserUpdate()
-    user_update.hashed_password = get_password_hash(password_change.new_password)
+    user_update = UserUpdate(hashed_password=get_password_hash(password_change.new_password))
     
     updated_user = await update_user(current_user.id, user_update)
     if not updated_user:

@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     super_admin_email: str = "admin@swsauda.com"
     super_admin_password: str = "admin123"
     
+    # Server configuration (optional)
+    host: str = "0.0.0.0"
+    port: int = 8000
+    reload: bool = True
+    
     class Config:
         env_file = ".env"
 

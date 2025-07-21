@@ -71,7 +71,7 @@ async def update_user(user_id: str, user_update: UserUpdate) -> Optional[UserInD
         update_data["role"] = user_update.role
     if user_update.is_active is not None:
         update_data["is_active"] = user_update.is_active
-    if hasattr(user_update, 'hashed_password') and user_update.hashed_password is not None:
+    if user_update.hashed_password is not None:
         update_data["hashed_password"] = user_update.hashed_password
     
     if update_data:

@@ -59,6 +59,20 @@ pip install -r requirements.txt
 ```
 
 ### 3. Configure Environment
+
+#### Option A: Use the Secret Key Generator (Recommended)
+```bash
+# Generate secret key and create .env file automatically
+./scripts/generate_key.sh
+
+# Or use the interactive generator
+python scripts/generate_secret_key.py
+
+# Or use the simple generator
+python scripts/generate_secret_key_simple.py
+```
+
+#### Option B: Manual Configuration
 Create a `.env` file in the root directory:
 ```env
 MONGODB_URL=mongodb://localhost:27017
@@ -156,6 +170,13 @@ SwSauda/
 ├── auth.py              # Authentication and authorization
 ├── crud.py              # Database CRUD operations
 ├── requirements.txt     # Python dependencies
+├── run.py               # Application startup script
+├── test_app.py          # Application testing script
+├── scripts/             # Utility scripts
+│   ├── generate_secret_key.py        # Interactive secret key generator
+│   ├── generate_secret_key_simple.py # Non-interactive secret key generator
+│   ├── generate_key.sh               # Shell script wrapper
+│   └── README.md                     # Scripts documentation
 ├── templates/           # HTML templates
 │   ├── base.html        # Base template
 │   ├── landing.html     # Landing page
