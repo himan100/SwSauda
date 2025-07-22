@@ -72,8 +72,10 @@ class TickDataResponse(BaseModel):
 
 class StartRunRequest(BaseModel):
     database_name: str
+    interval_seconds: float = 1.0
 
 class StartRunResponse(BaseModel):
     message: str
     database_name: str
-    status: str 
+    status: str
+    interval_seconds: float 

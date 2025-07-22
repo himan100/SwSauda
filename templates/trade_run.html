@@ -78,7 +78,7 @@
                         </svg>
                     </div>
                     <p class="text-green-600 text-sm mb-4">Run is active with database: <span class="font-mono">[[ runDatabase ]]</span></p>
-                    <p class="text-gray-600 text-xs mb-4">Stream interval: <span class="font-mono">[[ streamInterval ]]s</span></p>
+                    <p class="text-gray-600 text-xs mb-4">Stream interval: <span class="font-mono">[[ actualInterval ]]s</span></p>
                     <button 
                         @click="stopRun" 
                         class="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-md text-sm font-medium"
@@ -118,45 +118,43 @@
                     <div v-else-if="tickData.length === 0" class="text-center py-4">
                         <p class="text-gray-500 text-sm">Waiting for tick data...</p>
                     </div>
-                    <div v-else class="space-y-2 max-h-64 overflow-y-auto">
-                        <div v-for="(tick, index) in tickData" :key="tick._id || index" 
-                             class="bg-gray-50 p-3 rounded border transition-all duration-200"
-                             :class="index === 0 ? 'border-green-300 bg-green-50' : ''">
+                    <div v-else class="space-y-2">
+                        <div class="bg-gray-50 p-3 rounded border transition-all duration-200 border-green-300 bg-green-50">
                             <div class="grid grid-cols-2 gap-2 text-xs">
                                 <div>
                                     <span class="font-medium text-gray-700">Symbol:</span>
-                                    <span class="ml-1 font-semibold">[[ tick.ts ]]</span>
+                                    <span class="ml-1 font-semibold">[[ tickData[0].ts ]]</span>
                                 </div>
                                 <div>
                                     <span class="font-medium text-gray-700">Price:</span>
-                                    <span class="ml-1 text-green-600 font-semibold">[[ tick.lp ]]</span>
+                                    <span class="ml-1 text-green-600 font-semibold">[[ tickData[0].lp ]]</span>
                                 </div>
                                 <div>
                                     <span class="font-medium text-gray-700">Change:</span>
-                                    <span class="ml-1 font-semibold" :class="tick.pc >= 0 ? 'text-green-600' : 'text-red-600'">[[ tick.pc ]]</span>
+                                    <span class="ml-1 font-semibold" :class="tickData[0].pc >= 0 ? 'text-green-600' : 'text-red-600'">[[ tickData[0].pc ]]</span>
                                 </div>
                                 <div>
                                     <span class="font-medium text-gray-700">Exchange:</span>
-                                    <span class="ml-1 text-blue-600">[[ tick.e ]]</span>
+                                    <span class="ml-1 text-blue-600">[[ tickData[0].e ]]</span>
                                 </div>
                                 <div>
                                     <span class="font-medium text-gray-700">Token:</span>
-                                    <span class="ml-1">[[ tick.token ]]</span>
+                                    <span class="ml-1">[[ tickData[0].token ]]</span>
                                 </div>
                                 <div>
                                     <span class="font-medium text-gray-700">Time:</span>
-                                    <span class="ml-1">[[ tick.rt ]]</span>
+                                    <span class="ml-1">[[ tickData[0].rt ]]</span>
                                 </div>
                             </div>
-                            <div v-if="index === 0" class="mt-2 text-xs text-green-600 font-medium">
+                            <div class="mt-2 text-xs text-green-600 font-medium">
                                 ⚡ Latest Tick
                             </div>
                         </div>
                     </div>
                     <div v-if="tickData.length > 0" class="mt-3 text-xs text-gray-500 text-center">
-                        Showing [[ tickData.length ]] of [[ totalTicks ]] total ticks received
+                        Latest tick of [[ totalTicks ]] total ticks received
                         <br>
-                        <span class="text-blue-600">Stream interval: [[ streamInterval ]]s</span>
+                        <span class="text-blue-600">Stream interval: [[ actualInterval ]]s</span>
                     </div>
                 </div>
             </div>
@@ -187,7 +185,7 @@ createApp({
                     websocket: null,
                     isWebSocketConnected: false,
                     streamInterval: 1.0,  // Default interval in seconds
-                    maxTicksToShow: 1000  // Increased limit for all ticks
+                    actualInterval: 1.0   // Actual interval being used by backend
                 }
             },
     mounted() {
@@ -289,6 +287,7 @@ createApp({
                 const res = await axios.get('/api/run-status', { headers: { Authorization: `Bearer ${token}` } });
                 this.isRunStarted = res.data.is_running;
                 this.runDatabase = res.data.database_name;
+                this.actualInterval = res.data.interval_seconds; // Set actual interval from response
                 
                 // If run is active, connect to WebSocket
                 if (this.isRunStarted && this.runDatabase) {
@@ -359,13 +358,8 @@ createApp({
             }
         },
         handleTickData(tickData) {
-            // Add new tick to the beginning of the array
-            this.tickData.unshift(tickData);
-            
-            // Limit the number of displayed ticks for performance (but much higher now)
-            if (this.tickData.length > this.maxTicksToShow) {
-                this.tickData = this.tickData.slice(0, this.maxTicksToShow);
-            }
+            // Keep only the latest tick data (replace instead of add)
+            this.tickData = [tickData];
             
             // Update total count
             this.totalTicks++;
@@ -379,12 +373,16 @@ createApp({
             try {
                 const token = localStorage.getItem('token');
                 const res = await axios.post('/api/start-run', 
-                    { database_name: this.selectedDatabase }, 
+                    { 
+                        database_name: this.selectedDatabase,
+                        interval_seconds: parseFloat(this.streamInterval)
+                    }, 
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
                 this.message = res.data.message;
                 this.isRunStarted = true;
                 this.runDatabase = this.selectedDatabase;
+                this.actualInterval = res.data.interval_seconds; // Set actual interval from response
                 
                 // Connect to WebSocket for real-time updates
                 this.connectWebSocket();
@@ -397,20 +395,43 @@ createApp({
         async stopRun() {
             if (!this.isRunStarted) return;
             try {
+                // First, stop WebSocket stream if connected
+                if (this.websocket && this.isWebSocketConnected) {
+                    try {
+                        this.websocket.send(JSON.stringify({ type: 'stop_stream' }));
+                        // Wait a bit for the message to be sent
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    } catch (e) {
+                        console.log('WebSocket already disconnected');
+                    }
+                }
+                
+                // Close WebSocket connection
+                if (this.websocket) {
+                    this.websocket.close();
+                    this.websocket = null;
+                    this.isWebSocketConnected = false;
+                }
+                
+                // Then call the API to stop the run
                 const token = localStorage.getItem('token');
                 const res = await axios.post('/api/stop-run', {}, { headers: { Authorization: `Bearer ${token}` } });
                 this.message = res.data.message;
                 this.isRunStarted = false;
                 this.runDatabase = '';
+                this.actualInterval = 1.0;
                 this.tickData = [];
                 this.totalTicks = 0;
                 
-                // Stop WebSocket stream
-                if (this.websocket && this.isWebSocketConnected) {
-                    this.websocket.send(JSON.stringify({ type: 'stop_stream' }));
-                }
             } catch (e) {
                 this.message = e.response?.data?.detail || 'Error stopping run';
+                // Even if API fails, reset the UI state
+                this.isRunStarted = false;
+                this.runDatabase = '';
+                this.actualInterval = 1.0;
+                this.tickData = [];
+                this.totalTicks = 0;
+                this.isWebSocketConnected = false;
             }
         },
 

@@ -26,6 +26,7 @@ class ConnectionManager:
         self.active_connections: List[WebSocket] = []
         self.tick_stream_task = None
         self.current_database = None
+        self.is_streaming = False
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -48,22 +49,36 @@ class ConnectionManager:
                     # Remove disconnected clients
                     self.active_connections.remove(connection)
 
+    def is_stream_running(self) -> bool:
+        """Check if the tick stream is currently running"""
+        return self.is_streaming and self.tick_stream_task and not self.tick_stream_task.done()
+
     async def start_tick_stream(self, database_name: str, interval_seconds: float = 1.0):
         """Start streaming tick data from the specified database"""
         if self.tick_stream_task and not self.tick_stream_task.done():
             self.tick_stream_task.cancel()
         
         self.current_database = database_name
+        self.is_streaming = True
         self.tick_stream_task = asyncio.create_task(self._stream_ticks(database_name, interval_seconds))
 
     async def stop_tick_stream(self):
         """Stop the tick data stream"""
+        print("Stopping tick stream...")
         if self.tick_stream_task and not self.tick_stream_task.done():
             self.tick_stream_task.cancel()
+            try:
+                await self.tick_stream_task
+            except asyncio.CancelledError:
+                print("Tick stream task cancelled successfully")
+            except Exception as e:
+                print(f"Error cancelling tick stream task: {e}")
         self.current_database = None
+        self.is_streaming = False
+        print("Tick stream stopped")
 
     async def _stream_ticks(self, database_name: str, interval_seconds: float = 1.0):
-        """Stream tick data from MongoDB change stream"""
+        """Stream tick data from MongoDB with proper interval control"""
         try:
             # Connect to the specific database
             database = db.client[database_name]
@@ -71,12 +86,17 @@ class ConnectionManager:
             
             print(f"Starting tick stream from database {database_name} with {interval_seconds}s interval")
             
-            # First, send ALL historical ticks to get started
-            print("Sending all historical ticks...")
+            # First, send ALL historical ticks one by one with interval
+            print("Sending all historical ticks one by one...")
             cursor = indextick_collection.find({}).sort("ft", 1)  # Oldest first
             
             initial_count = 0
             async for doc in cursor:
+                # Check if stream was stopped
+                if not self.is_streaming or (self.tick_stream_task and self.tick_stream_task.done()):
+                    print("Tick stream was stopped during historical data send")
+                    return
+                
                 tick_data = TickData(
                     ft=doc.get("ft", 0),
                     token=doc.get("token", 0),
@@ -92,9 +112,11 @@ class ConnectionManager:
                 await self.broadcast(tick_data.json())
                 initial_count += 1
                 
-                # Small delay to prevent overwhelming the client
-                if initial_count % 100 == 0:  # Every 100 ticks
-                    await asyncio.sleep(0.01)  # 10ms delay
+                # Apply interval between each tick for better control
+                await asyncio.sleep(interval_seconds)
+                
+                # Progress update every 100 ticks
+                if initial_count % 100 == 0:
                     print(f"Sent {initial_count} historical ticks...")
             
             print(f"Sent {initial_count} historical ticks")
@@ -106,7 +128,12 @@ class ConnectionManager:
             print(f"Monitoring for new ticks after timestamp: {last_ft}")
             
             # Now monitor for new ticks with configurable interval
-            while True:
+            while self.is_streaming:
+                # Check if stream was stopped
+                if self.tick_stream_task and self.tick_stream_task.done():
+                    print("Tick stream was stopped during monitoring")
+                    break
+                
                 try:
                     # Query for new ticks since last_ft
                     cursor = indextick_collection.find(
@@ -115,6 +142,11 @@ class ConnectionManager:
                     
                     new_ticks_found = False
                     async for doc in cursor:
+                        # Check if stream was stopped
+                        if not self.is_streaming or (self.tick_stream_task and self.tick_stream_task.done()):
+                            print("Tick stream was stopped during new tick processing")
+                            return
+                        
                         new_ticks_found = True
                         # Update last_ft
                         last_ft = doc.get("ft", last_ft)
@@ -133,6 +165,9 @@ class ConnectionManager:
                         
                         # Send to all connected clients
                         await self.broadcast(tick_data.json())
+                        
+                        # Apply interval between each new tick
+                        await asyncio.sleep(interval_seconds)
                     
                     if not new_ticks_found:
                         # No new ticks, wait for the configured interval
@@ -144,6 +179,8 @@ class ConnectionManager:
                     
         except Exception as e:
             print(f"Error starting tick stream: {e}")
+        finally:
+            print("Tick stream ended")
 
 # Create connection manager instance
 manager = ConnectionManager()
@@ -550,14 +587,16 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
         
         # Store the selected database for the run
         selected_database_store["run_database"] = request.database_name
+        selected_database_store["run_interval"] = request.interval_seconds
         
-        # Start WebSocket tick stream with default 1-second interval
-        await manager.start_tick_stream(request.database_name, 1.0)
+        # Start WebSocket tick stream with the provided interval
+        await manager.start_tick_stream(request.database_name, request.interval_seconds)
         
         return StartRunResponse(
             message=f"Trading run started with database '{request.database_name}'",
             database_name=request.database_name,
-            status="started"
+            status="started",
+            interval_seconds=request.interval_seconds
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error starting run: {str(e)}")
@@ -569,6 +608,8 @@ async def stop_run(current_user: User = Depends(get_admin_user)):
         if "run_database" in selected_database_store:
             database_name = selected_database_store["run_database"]
             del selected_database_store["run_database"]
+            if "run_interval" in selected_database_store:
+                del selected_database_store["run_interval"]
             
             # Stop WebSocket tick stream
             await manager.stop_tick_stream()
@@ -631,9 +672,13 @@ async def get_tick_data(
 async def get_run_status(current_user: User = Depends(get_admin_user)):
     """Get the current run status"""
     database_name = selected_database_store.get("run_database", "")
+    interval_seconds = selected_database_store.get("run_interval", 1.0)
+    is_stream_running = manager.is_stream_running()
     return {
         "is_running": bool(database_name),
-        "database_name": database_name
+        "database_name": database_name,
+        "interval_seconds": interval_seconds,
+        "is_stream_running": is_stream_running
     }
 
 @app.websocket("/ws/tick-data")
