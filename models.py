@@ -52,4 +52,28 @@ class ProfileUpdate(BaseModel):
 
 class PasswordChange(BaseModel):
     current_password: str
-    new_password: str 
+    new_password: str
+
+# Tick Data Models
+class TickData(BaseModel):
+    ft: int  # Feed time
+    token: int  # Token number
+    e: str  # Exchange (e.g., 'NSE')
+    lp: float  # Last price
+    pc: float  # Price change
+    rt: str  # Record time
+    ts: str  # Trading symbol
+    _id: Optional[str] = None
+
+class TickDataResponse(BaseModel):
+    ticks: List[TickData]
+    total_count: int
+    database_name: str
+
+class StartRunRequest(BaseModel):
+    database_name: str
+
+class StartRunResponse(BaseModel):
+    message: str
+    database_name: str
+    status: str 

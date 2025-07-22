@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Depends, status, Form
+from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -7,16 +7,146 @@ from datetime import timedelta, datetime
 import os
 import subprocess
 import json
+import asyncio
 from pathlib import Path
+from typing import List, Dict
 
 from database import connect_to_mongo, close_mongo_connection, db
-from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange
+from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, TickData, TickDataResponse, StartRunRequest, StartRunResponse
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin
 from config import settings
 
 # Store the currently selected database
 selected_database_store = {}
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.tick_stream_task = None
+        self.current_database = None
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        if self.active_connections:
+            # Send to all connected clients
+            for connection in self.active_connections:
+                try:
+                    await connection.send_text(message)
+                except:
+                    # Remove disconnected clients
+                    self.active_connections.remove(connection)
+
+    async def start_tick_stream(self, database_name: str, interval_seconds: float = 1.0):
+        """Start streaming tick data from the specified database"""
+        if self.tick_stream_task and not self.tick_stream_task.done():
+            self.tick_stream_task.cancel()
+        
+        self.current_database = database_name
+        self.tick_stream_task = asyncio.create_task(self._stream_ticks(database_name, interval_seconds))
+
+    async def stop_tick_stream(self):
+        """Stop the tick data stream"""
+        if self.tick_stream_task and not self.tick_stream_task.done():
+            self.tick_stream_task.cancel()
+        self.current_database = None
+
+    async def _stream_ticks(self, database_name: str, interval_seconds: float = 1.0):
+        """Stream tick data from MongoDB change stream"""
+        try:
+            # Connect to the specific database
+            database = db.client[database_name]
+            indextick_collection = database["IndexTick"]
+            
+            print(f"Starting tick stream from database {database_name} with {interval_seconds}s interval")
+            
+            # First, send ALL historical ticks to get started
+            print("Sending all historical ticks...")
+            cursor = indextick_collection.find({}).sort("ft", 1)  # Oldest first
+            
+            initial_count = 0
+            async for doc in cursor:
+                tick_data = TickData(
+                    ft=doc.get("ft", 0),
+                    token=doc.get("token", 0),
+                    e=doc.get("e", ""),
+                    lp=doc.get("lp", 0.0),
+                    pc=doc.get("pc", 0.0),
+                    rt=doc.get("rt", ""),
+                    ts=doc.get("ts", ""),
+                    _id=str(doc.get("_id", ""))
+                )
+                
+                # Send each tick immediately
+                await self.broadcast(tick_data.json())
+                initial_count += 1
+                
+                # Small delay to prevent overwhelming the client
+                if initial_count % 100 == 0:  # Every 100 ticks
+                    await asyncio.sleep(0.01)  # 10ms delay
+                    print(f"Sent {initial_count} historical ticks...")
+            
+            print(f"Sent {initial_count} historical ticks")
+            
+            # Get the latest timestamp to start monitoring for new data
+            latest_doc = await indextick_collection.find_one({}, sort=[("ft", -1)])
+            last_ft = latest_doc.get("ft", 0) if latest_doc else 0
+            
+            print(f"Monitoring for new ticks after timestamp: {last_ft}")
+            
+            # Now monitor for new ticks with configurable interval
+            while True:
+                try:
+                    # Query for new ticks since last_ft
+                    cursor = indextick_collection.find(
+                        {"ft": {"$gt": last_ft}}
+                    ).sort("ft", 1)
+                    
+                    new_ticks_found = False
+                    async for doc in cursor:
+                        new_ticks_found = True
+                        # Update last_ft
+                        last_ft = doc.get("ft", last_ft)
+                        
+                        # Convert to TickData model
+                        tick_data = TickData(
+                            ft=doc.get("ft", 0),
+                            token=doc.get("token", 0),
+                            e=doc.get("e", ""),
+                            lp=doc.get("lp", 0.0),
+                            pc=doc.get("pc", 0.0),
+                            rt=doc.get("rt", ""),
+                            ts=doc.get("ts", ""),
+                            _id=str(doc.get("_id", ""))
+                        )
+                        
+                        # Send to all connected clients
+                        await self.broadcast(tick_data.json())
+                    
+                    if not new_ticks_found:
+                        # No new ticks, wait for the configured interval
+                        await asyncio.sleep(interval_seconds)
+                    
+                except Exception as e:
+                    print(f"Error in tick stream: {e}")
+                    await asyncio.sleep(5)  # Wait longer on error
+                    
+        except Exception as e:
+            print(f"Error starting tick stream: {e}")
+
+# Create connection manager instance
+manager = ConnectionManager()
 
 app = FastAPI(title="SwSauda", version="1.0.0")
 
@@ -408,6 +538,159 @@ async def get_selected_database(current_user: User = Depends(get_admin_user)):
 async def unset_selected_database(current_user: User = Depends(get_admin_user)):
     selected_database_store["selected"] = ""
     return {"message": "Selected database has been unset."}
+
+@app.post("/api/start-run", response_model=StartRunResponse)
+async def start_run(request: StartRunRequest, current_user: User = Depends(get_admin_user)):
+    """Start a trading run with the specified database"""
+    try:
+        # Validate that the database exists
+        databases = await db.client.list_database_names()
+        if request.database_name not in databases:
+            raise HTTPException(status_code=404, detail=f"Database '{request.database_name}' not found")
+        
+        # Store the selected database for the run
+        selected_database_store["run_database"] = request.database_name
+        
+        # Start WebSocket tick stream with default 1-second interval
+        await manager.start_tick_stream(request.database_name, 1.0)
+        
+        return StartRunResponse(
+            message=f"Trading run started with database '{request.database_name}'",
+            database_name=request.database_name,
+            status="started"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error starting run: {str(e)}")
+
+@app.post("/api/stop-run")
+async def stop_run(current_user: User = Depends(get_admin_user)):
+    """Stop the current trading run"""
+    try:
+        if "run_database" in selected_database_store:
+            database_name = selected_database_store["run_database"]
+            del selected_database_store["run_database"]
+            
+            # Stop WebSocket tick stream
+            await manager.stop_tick_stream()
+            
+            return {"message": f"Trading run stopped for database '{database_name}'"}
+        else:
+            return {"message": "No active run to stop"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error stopping run: {str(e)}")
+
+@app.get("/api/tick-data", response_model=TickDataResponse)
+async def get_tick_data(
+    skip: int = 0, 
+    limit: int = 100, 
+    current_user: User = Depends(get_admin_user)
+):
+    """Get tick data from the indextick collection of the selected database"""
+    try:
+        # Get the database name from the run
+        database_name = selected_database_store.get("run_database")
+        if not database_name:
+            raise HTTPException(status_code=400, detail="No active run. Please start a run first.")
+        
+        # Connect to the specific database
+        database = db.client[database_name]
+        
+        # Get the IndexTick collection (note the capital letters)
+        indextick_collection = database["IndexTick"]
+        
+        # Get total count
+        total_count = await indextick_collection.count_documents({})
+        
+        # Fetch tick data with pagination
+        cursor = indextick_collection.find({}).skip(skip).limit(limit).sort("ft", -1)  # Sort by feed time descending
+        
+        ticks = []
+        async for doc in cursor:
+            # Convert MongoDB document to TickData model
+            tick_data = TickData(
+                ft=doc.get("ft", 0),
+                token=doc.get("token", 0),
+                e=doc.get("e", ""),
+                lp=doc.get("lp", 0.0),
+                pc=doc.get("pc", 0.0),
+                rt=doc.get("rt", ""),
+                ts=doc.get("ts", ""),
+                _id=str(doc.get("_id", ""))
+            )
+            ticks.append(tick_data)
+        
+        return TickDataResponse(
+            ticks=ticks,
+            total_count=total_count,
+            database_name=database_name
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching tick data: {str(e)}")
+
+@app.get("/api/run-status")
+async def get_run_status(current_user: User = Depends(get_admin_user)):
+    """Get the current run status"""
+    database_name = selected_database_store.get("run_database", "")
+    return {
+        "is_running": bool(database_name),
+        "database_name": database_name
+    }
+
+@app.websocket("/ws/tick-data")
+async def websocket_tick_data(websocket: WebSocket):
+    """WebSocket endpoint for real-time tick data streaming"""
+    await manager.connect(websocket)
+    try:
+        # Send initial connection message
+        await manager.send_personal_message(
+            json.dumps({"type": "connection", "message": "Connected to tick data stream"}),
+            websocket
+        )
+        
+        # Keep connection alive and handle messages
+        while True:
+            try:
+                # Wait for messages from client
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle different message types
+                if message.get("type") == "start_stream":
+                    database_name = message.get("database_name")
+                    interval_seconds = message.get("interval_seconds", 1.0)
+                    if database_name:
+                        await manager.start_tick_stream(database_name, interval_seconds)
+                        await manager.send_personal_message(
+                            json.dumps({
+                                "type": "stream_started", 
+                                "database": database_name,
+                                "interval_seconds": interval_seconds
+                            }),
+                            websocket
+                        )
+                
+                elif message.get("type") == "stop_stream":
+                    await manager.stop_tick_stream()
+                    await manager.send_personal_message(
+                        json.dumps({"type": "stream_stopped"}),
+                        websocket
+                    )
+                
+            except WebSocketDisconnect:
+                manager.disconnect(websocket)
+                break
+            except Exception as e:
+                print(f"WebSocket error: {e}")
+                await manager.send_personal_message(
+                    json.dumps({"type": "error", "message": str(e)}),
+                    websocket
+                )
+                
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket connection error: {e}")
+        manager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn
