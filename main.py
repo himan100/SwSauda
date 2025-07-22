@@ -339,6 +339,11 @@ async def delete_backup(backup_folder: str, current_user: User = Depends(get_adm
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting backup: {str(e)}")
 
+@app.get("/api/config/database-prefix")
+async def get_database_prefix(current_user: User = Depends(get_admin_user)):
+    """Get the database prefix configuration"""
+    return {"database_prefix": settings.database_prefix}
+
 # Frontend routes
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request):

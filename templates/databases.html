@@ -186,6 +186,7 @@ createApp({
             restoreDatabaseName: '',
             backupName: '',
             databaseName: '',
+            databasePrefix: 'N', // Default value, will be loaded from API
             toast: {
                 show: false,
                 message: '',
@@ -258,9 +259,23 @@ createApp({
             
             this.loadDatabases();
             this.loadBackups();
+            this.loadDatabasePrefix();
         });
     },
     methods: {
+        async loadDatabasePrefix() {
+            try {
+                const token = localStorage.getItem('token');
+                const response = await axios.get('/api/config/database-prefix', {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                this.databasePrefix = response.data.database_prefix;
+                console.log('Loaded database prefix:', this.databasePrefix);
+            } catch (error) {
+                console.error('Error loading database prefix:', error);
+                // Keep the default value if API call fails
+            }
+        },
         async loadDatabases() {
             this.loading = true;
             try {
@@ -488,7 +503,7 @@ createApp({
             const year = parseInt(backupDate.substring(4, 8));
             const yyyymmdd = `${year.toString().padStart(4, '0')}${month.toString().padStart(2, '0')}${day.toString().padStart(2, '0')}`;
             
-            const prefixedName = `nifty_${yyyymmdd}`;
+            const prefixedName = `${this.databasePrefix}_${yyyymmdd}`;
             if (!confirm(`Are you sure you want to restore database '${prefixedName}' from backup? This will overwrite the existing database if it exists.`)) {
                 return;
             }
