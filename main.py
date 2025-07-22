@@ -391,12 +391,12 @@ async def roles_page(request: Request):
 async def databases_page(request: Request):
     return templates.TemplateResponse("databases.html", {"request": request})
 
-@app.get("/select-database", response_class=HTMLResponse)
-async def select_database_page(request: Request):
-    return templates.TemplateResponse("select_database.html", {"request": request})
+@app.get("/trade-run", response_class=HTMLResponse)
+async def trade_run_page(request: Request):
+    return templates.TemplateResponse("trade_run.html", {"request": request})
 
-@app.post("/api/select-database")
-async def select_database_api(database_name: str = Form(...), current_user: User = Depends(get_admin_user)):
+@app.post("/api/trade-run")
+async def trade_run_api(database_name: str = Form(...), current_user: User = Depends(get_admin_user)):
     selected_database_store["selected"] = database_name
     return {"message": f"Selected database set to {database_name}"}
 
