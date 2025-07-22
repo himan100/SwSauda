@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi import FastAPI, Request, HTTPException, Depends, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,6 +14,9 @@ from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, 
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin
 from config import settings
+
+# Store the currently selected database
+selected_database_store = {}
 
 app = FastAPI(title="SwSauda", version="1.0.0")
 
@@ -341,8 +344,19 @@ async def delete_backup(backup_folder: str, current_user: User = Depends(get_adm
 
 @app.get("/api/config/database-prefix")
 async def get_database_prefix(current_user: User = Depends(get_admin_user)):
-    """Get the database prefix configuration"""
+    print(f"[DEBUG] DATABASE_PREFIX from settings: {settings.database_prefix}")
     return {"database_prefix": settings.database_prefix}
+
+@app.get("/api/databases/prefixed")
+async def get_prefixed_databases(current_user: User = Depends(get_admin_user)):
+    """Get list of all MongoDB databases with the configured prefix"""
+    try:
+        databases = await db.client.list_database_names()
+        prefix = settings.database_prefix
+        user_databases = [db_name for db_name in databases if db_name.startswith(prefix)]
+        return {"databases": user_databases}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching databases: {str(e)}")
 
 # Frontend routes
 @app.get("/", response_class=HTMLResponse)
@@ -376,6 +390,24 @@ async def roles_page(request: Request):
 @app.get("/databases", response_class=HTMLResponse)
 async def databases_page(request: Request):
     return templates.TemplateResponse("databases.html", {"request": request})
+
+@app.get("/select-database", response_class=HTMLResponse)
+async def select_database_page(request: Request):
+    return templates.TemplateResponse("select_database.html", {"request": request})
+
+@app.post("/api/select-database")
+async def select_database_api(database_name: str = Form(...), current_user: User = Depends(get_admin_user)):
+    selected_database_store["selected"] = database_name
+    return {"message": f"Selected database set to {database_name}"}
+
+@app.get("/api/selected-database")
+async def get_selected_database(current_user: User = Depends(get_admin_user)):
+    return {"selected_database": selected_database_store.get("selected", "")}
+
+@app.post("/api/unset-selected-database")
+async def unset_selected_database(current_user: User = Depends(get_admin_user)):
+    selected_database_store["selected"] = ""
+    return {"message": "Selected database has been unset."}
 
 if __name__ == "__main__":
     import uvicorn

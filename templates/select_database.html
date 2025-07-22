@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}Select Database - SwSauda{% endblock %}
+
+{% block content %}
+<div id="select-db-app" class="py-6">
+    <div class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h1 class="text-2xl font-semibold text-gray-900 mb-4">Select a Database</h1>
+        <p class="mb-4 text-gray-600">Choose a database with prefix <span class="font-mono bg-gray-100 px-2 py-1 rounded">[[ databasePrefix ]]</span> to use for further processing.</p>
+        <div v-if="loading" class="text-center py-8">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+            <p class="mt-2 text-gray-500">Loading databases...</p>
+        </div>
+        <div v-else>
+            <form @submit.prevent="selectDatabase">
+                <div v-if="databases.length === 0" class="text-center py-8">
+                    <p class="text-gray-500">No databases found with prefix '{{ databasePrefix }}'.</p>
+                </div>
+                <div v-else>
+                    <label for="database" class="block text-sm font-medium text-gray-700 mb-2">Databases</label>
+                    <select v-model="selected" id="database" name="database" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary focus:border-primary">
+                        <option v-if="!selectedDatabase" disabled value="">Select a Database</option>
+                        <option v-else value="">Unset Selected Database</option>
+                        <option v-for="db in databases" :key="db" :value="db">[[ db ]]</option>
+                    </select>
+                    <div class="flex space-x-2 mt-4">
+                        <button type="submit" :disabled="selected === ''" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50">Select Database</button>
+                        <button type="button" :disabled="selected !== ''" @click="unsetDatabase" class="bg-gray-500 hover:bg-gray-700 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50">Unset Database</button>
+                    </div>
+                </div>
+            </form>
+            <div v-if="message" class="mt-4 text-green-600">[[ message ]]</div>
+            <div v-if="selectedDatabase" class="mt-2 text-sm text-gray-700">Currently selected: <span class="font-mono">[[ selectedDatabase ]]</span></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const { createApp } = Vue;
+createApp({
+    delimiters: ['[[', ']]'],
+    data() {
+        return {
+            databases: [],
+            selected: '',
+            loading: true,
+            message: '',
+            databasePrefix: '',
+            selectedDatabase: ''
+        }
+    },
+    mounted() {
+        this.loadPrefix();
+        this.loadDatabases();
+        this.loadSelected();
+    },
+    watch: {
+        selectedDatabase(newVal) {
+            // If a database is set, select it by default
+            if (newVal && this.databases.includes(newVal)) {
+                this.selected = newVal;
+            } else if (!newVal && this.databases.length > 0) {
+                this.selected = '';
+            }
+        },
+        databases(newVal) {
+            // If databases change, reselect if needed
+            if (this.selectedDatabase && newVal.includes(this.selectedDatabase)) {
+                this.selected = this.selectedDatabase;
+            } else if (!this.selectedDatabase) {
+                this.selected = '';
+            }
+        }
+    },
+    methods: {
+        async loadPrefix() {
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.get('/api/config/database-prefix', { headers: { Authorization: `Bearer ${token}` } });
+                this.databasePrefix = res.data.database_prefix;
+            } catch (e) { this.databasePrefix = ''; }
+        },
+        async loadDatabases() {
+            this.loading = true;
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.get('/api/databases/prefixed', { headers: { Authorization: `Bearer ${token}` } });
+                this.databases = res.data.databases;
+            } catch (e) {
+                this.databases = [];
+            } finally {
+                this.loading = false;
+            }
+        },
+        async selectDatabase() {
+            if (this.selected === '') {
+                // Should not submit if Unset is selected, handled by button disabling
+                return;
+            }
+            try {
+                const token = localStorage.getItem('token');
+                const form = new FormData();
+                form.append('database_name', this.selected);
+                const res = await axios.post('/api/select-database', form, { headers: { Authorization: `Bearer ${token}` } });
+                this.message = res.data.message;
+                this.selectedDatabase = this.selected;
+            } catch (e) {
+                this.message = e.response?.data?.detail || 'Error selecting database';
+            }
+        },
+        async unsetDatabase() {
+            if (this.selected !== '') return;
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.post('/api/unset-selected-database', {}, { headers: { Authorization: `Bearer ${token}` } });
+                this.message = res.data.message;
+                this.selectedDatabase = '';
+                this.selected = '';
+            } catch (e) {
+                this.message = e.response?.data?.detail || 'Error unsetting database';
+            }
+        },
+        async loadSelected() {
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.get('/api/selected-database', { headers: { Authorization: `Bearer ${token}` } });
+                this.selectedDatabase = res.data.selected_database;
+            } catch (e) { this.selectedDatabase = ''; }
+        }
+    }
+}).mount('#select-db-app');
+</script>
+{% endblock %} 
