@@ -8,6 +8,7 @@ import os
 import subprocess
 import json
 import asyncio
+import math
 from pathlib import Path
 from typing import List, Dict
 
@@ -1056,6 +1057,63 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
         else:
             print(f"MongoDB views created successfully for database: {request.database_name}")
         
+        # Get the specific database
+        target_db = db.client[request.database_name]
+        
+        # Initialize hours_for_expiry
+        hours_for_expiry = None
+        
+        # Step 1: Get ibase and index ft from view v_index_base
+        try:
+            v_index_base_cursor = target_db.v_index_base.find().limit(1)
+            v_index_base_doc = await v_index_base_cursor.to_list(length=1)
+            
+            if not v_index_base_doc:
+                print("Warning: No data found in v_index_base view")
+                ibase = None
+                index_ft = None
+            else:
+                ibase = v_index_base_doc[0].get('ibase')
+                index_ft = v_index_base_doc[0].get('ft')
+                print(f"Retrieved from v_index_base - ibase: {ibase}, index_ft: {index_ft}")
+                
+                if ibase is not None and index_ft is not None:
+                    # Step 2: Get token from Option collection where ibase matches strprc and optt = "CE"
+                    option_cursor = target_db.Option.find({"strprc": ibase, "optt": "CE"}).limit(1)
+                    option_doc = await option_cursor.to_list(length=1)
+                    
+                    if not option_doc:
+                        print(f"Warning: No CE option found with strprc: {ibase}")
+                        option_token = None
+                    else:
+                        option_token = option_doc[0].get('token')
+                        print(f"Retrieved from Option collection - token: {option_token}")
+                        
+                        if option_token is not None:
+                            # Step 3: Get expiry from FyersSymbolMaster where token matches
+                            fyers_cursor = target_db.FyersSymbolMaster.find({"token": option_token}).limit(1)
+                            fyers_doc = await fyers_cursor.to_list(length=1)
+                            
+                            if not fyers_doc:
+                                print(f"Warning: No FyersSymbolMaster record found with token: {option_token}")
+                                expiry = None
+                            else:
+                                expiry = fyers_doc[0].get('expiry')
+                                print(f"Retrieved from FyersSymbolMaster - expiry: {expiry}")
+                                
+                                if expiry is not None:
+                                    # Step 4: Calculate hours for expiry
+                                    hours_for_expiry = math.floor((expiry - index_ft) / 3600)
+                                    print(f"Calculated hours for expiry: {hours_for_expiry}")
+                                else:
+                                    print("Warning: Expiry value is None")
+                        else:
+                            print("Warning: Option token is None")
+                else:
+                    print("Warning: ibase or index_ft is None")
+        except Exception as e:
+            print(f"Error during expiry calculation: {str(e)}")
+        
         # Store the selected database for the run
         selected_database_store["run_database"] = request.database_name
         selected_database_store["run_interval"] = request.interval_seconds
@@ -1067,7 +1125,8 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
             message=f"Trading run started with database '{request.database_name}'{' (views created)' if views_success else ' (views creation failed)'}",
             database_name=request.database_name,
             status="started",
-            interval_seconds=request.interval_seconds
+            interval_seconds=request.interval_seconds,
+            hours_for_expiry=hours_for_expiry
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error starting run: {str(e)}")

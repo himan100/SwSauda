@@ -88,4 +88,5 @@ class StartRunResponse(BaseModel):
     message: str
     database_name: str
     status: str
-    interval_seconds: float 
+    interval_seconds: float
+    hours_for_expiry: Optional[int] = None 

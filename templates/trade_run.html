@@ -90,7 +90,8 @@
                         </svg>
                     </div>
                     <p class="text-green-600 text-sm mb-4">Run is active with database: <span class="font-mono">[[ runDatabase ]]</span></p>
-                    <p class="text-gray-600 text-xs mb-4">Stream interval: <span class="font-mono">[[ actualInterval ]]s</span></p>
+                    <p class="text-gray-600 text-xs mb-2">Stream interval: <span class="font-mono">[[ actualInterval ]]s</span></p>
+                    <p v-if="hoursForExpiry !== null" class="text-blue-600 text-xs mb-4">Hours for expiry: <span class="font-mono font-bold">[[ hoursForExpiry ]]</span></p>
                     <button 
                         @click="stopRun" 
                         class="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-md text-sm font-medium"
@@ -281,7 +282,8 @@ createApp({
                     websocket: null,
                     isWebSocketConnected: false,
                     streamInterval: 1.0,  // Default interval in seconds
-                    actualInterval: 1.0   // Actual interval being used by backend
+                    actualInterval: 1.0,   // Actual interval being used by backend
+                    hoursForExpiry: null   // Hours for expiry calculation
                 }
             },
     mounted() {
@@ -523,6 +525,7 @@ createApp({
                 this.isRunStarted = true;
                 this.runDatabase = this.selectedDatabase;
                 this.actualInterval = res.data.interval_seconds; // Set actual interval from response
+                this.hoursForExpiry = res.data.hours_for_expiry; // Set hours for expiry from response
                 
                 // Connect to WebSocket for real-time updates
                 this.connectWebSocket();
@@ -560,6 +563,7 @@ createApp({
                 this.isRunStarted = false;
                 this.runDatabase = '';
                 this.actualInterval = 1.0;
+                this.hoursForExpiry = null;
                 this.tickData = [];
                 this.totalTicks = 0;
                 this.optionTickData = [];
