@@ -43,6 +43,18 @@ A comprehensive FastAPI-based business management platform with advanced user ma
 - Date display in DD/MM/YYYY format for user-friendly reading
 - Database prefix for restored databases (configurable via DATABASE_PREFIX in .env)
 
+### 📊 Trade Run & MongoDB Views Integration
+- **Real-time Trading Data**: Stream IndexTick and OptionTick data via WebSocket
+- **Configurable Intervals**: Adjustable streaming frequency (0.1s to 5.0s)
+- **Automatic Views Creation**: MongoDB analysis views are automatically created when starting a trading run
+- **Manual Views Creation**: Create MongoDB views manually via web interface
+- **Analytics Views**: 
+  - `v_index_base`: Base index data with calculated strike levels
+  - `v_option_pair_base`: Option pair analysis with risk calculations
+- **Multi-MongoDB Shell Support**: Compatible with both `mongosh` (v2.0+) and legacy `mongo` shell
+- **Error Handling**: Graceful fallback and detailed error reporting
+- **See [MONGODB_VIEWS_INTEGRATION.md](MONGODB_VIEWS_INTEGRATION.md) for detailed documentation**
+
 ## Tech Stack
 
 - **Backend**: FastAPI (Python)
@@ -62,6 +74,10 @@ A comprehensive FastAPI-based business management platform with advanced user ma
 - MongoDB Database Tools (for backup/restore functionality)
   - `mongodump` and `mongorestore` commands must be available in PATH
   - Install from: https://docs.mongodb.com/database-tools/installation/
+- MongoDB Shell (for views creation functionality)
+  - `mongosh` (recommended - MongoDB Shell v2.0+) OR `mongo` (legacy shell)
+  - Install mongosh from: https://www.mongodb.com/try/download/shell
+  - Ubuntu/Debian: `sudo apt-get install mongodb-mongosh`
 
 ### 1. Clone the Repository
 ```bash

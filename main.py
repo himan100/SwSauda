@@ -12,13 +12,389 @@ from pathlib import Path
 from typing import List, Dict
 
 from database import connect_to_mongo, close_mongo_connection, db
-from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, TickData, TickDataResponse, StartRunRequest, StartRunResponse
+from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin
 from config import settings
 
 # Store the currently selected database
 selected_database_store = {}
+
+async def execute_mongo_views_script(database_name: str):
+    """Execute the MongoDB analysis views script on the selected database"""
+    try:
+        # Path to the MongoDB JavaScript file
+        script_path = os.path.join(os.path.dirname(__file__), "scripts", "mongo_data_analysis_views.js")
+        
+        if not os.path.exists(script_path):
+            print(f"MongoDB views script not found at: {script_path}")
+            return False
+        
+        # Create a temporary script with the correct database name
+        temp_script_content = f"""
+use('{database_name}');
+
+// Drop existing views if they exist
+try {{ db.v_index_base.drop(); }} catch(e) {{ print('v_index_base view does not exist, continuing...'); }}
+try {{ db.v_option_pair_base.drop(); }} catch(e) {{ print('v_option_pair_base view does not exist, continuing...'); }}
+
+// Create v_index_base view
+db.createView(
+  'v_index_base',
+  'IndexTick',
+  [
+    {{
+      $sort: {{ ft: 1 }}
+    }},
+    {{
+      $limit: 150
+    }},
+    {{
+      $match: {{
+        $expr: {{
+          $eq: [{{ $mod: ['$ft', 60] }}, 0]
+        }}
+      }}
+    }},
+    {{
+      $group: {{
+        _id: null,
+        minFt: {{ $min: '$ft' }}
+      }}
+    }},
+    {{
+      $lookup: {{
+        from: "IndexTick",
+        let: {{ minFt: "$minFt" }},
+        pipeline: [
+          {{
+            $match: {{
+              $expr: {{ $eq: ["$ft", "$$minFt"] }}
+            }}
+          }},
+          {{
+            $lookup: {{
+              from: "Index",
+              localField: "token",
+              foreignField: "token",
+              as: "indexData"
+            }}
+          }},
+          {{
+            $unwind: "$indexData"
+          }},
+          {{
+            $replaceRoot: {{
+              newRoot: {{ $mergeObjects: [ "$$ROOT", "$indexData" ] }}
+            }}
+          }},
+          {{
+            $unset: "indexData"
+          }},
+          {{
+            $addFields: {{
+              ibase: {{
+                $multiply: [
+                  {{ $floor: {{ $divide: ["$lp", "$strkstep"] }} }},
+                  "$strkstep"
+                ]
+              }},
+              itop: {{
+                $multiply: [
+                  {{ $ceil: {{ $divide: ["$lp", "$strkstep"] }} }},
+                  "$strkstep"
+                ]
+              }}
+            }}
+          }}
+        ],
+        as: "results"
+      }}
+    }},
+    {{
+      $unwind: "$results"
+    }},
+    {{
+      $replaceRoot: {{ newRoot: "$results" }}
+    }}
+  ]
+);
+
+print('v_index_base view created successfully for database: {database_name}');
+
+// Create v_option_pair_base view
+db.createView(
+  'v_option_pair_base',
+  'IndexTick',
+  [
+    {{
+      $match: {{
+        $expr: {{
+          $eq: [{{ $mod: ['$ft', 300] }}, 0]
+        }}
+      }}
+    }},
+    {{
+      $lookup: {{
+        from: "Index",
+        localField: "token",
+        foreignField: "token",
+        as: "indexData"
+      }}
+    }},
+    {{
+      $unwind: "$indexData"
+    }},
+    {{
+      $replaceRoot: {{
+        newRoot: {{ $mergeObjects: [ "$$ROOT", "$indexData" ] }}
+      }}
+    }},
+    {{
+      $unset: "indexData"
+    }},
+    {{
+      $addFields: {{
+        ibase: {{
+          $multiply: [
+            {{ $floor: {{ $divide: ["$lp", "$strkstep"] }} }},
+            "$strkstep"
+          ]
+        }},
+        itop: {{
+          $multiply: [
+            {{ $ceil: {{ $divide: ["$lp", "$strkstep"] }} }},
+            "$strkstep"
+          ]
+        }}
+      }}
+    }},
+    {{
+      $addFields: {{
+        levels: {{ $range: [0, 10, 1] }}
+      }}
+    }},
+    {{
+      $unwind: "$levels"
+    }},
+    {{
+      $addFields: {{
+        level: "$levels",
+        ce_strike: {{ $subtract: ["$ibase", {{ $multiply: ["$strkstep", "$levels"] }}] }},
+        pe_strike: {{ $add: ["$itop", {{ $multiply: ["$strkstep", "$levels"] }}] }}
+      }}
+    }},
+    {{
+      $lookup: {{
+        from: "Option",
+        let: {{ strike: "$ce_strike" }},
+        pipeline: [
+          {{
+            $match: {{
+              $expr: {{
+                $and: [
+                  {{ $eq: ["$strprc", "$$strike"] }},
+                  {{ $eq: ["$optt", "CE"] }}
+                ]
+              }}
+            }}
+          }}
+        ],
+        as: "ceOption"
+      }}
+    }},
+    {{
+      $lookup: {{
+        from: "Option",
+        let: {{ strike: "$pe_strike" }},
+        pipeline: [
+          {{
+            $match: {{
+              $expr: {{
+                $and: [
+                  {{ $eq: ["$strprc", "$$strike"] }},
+                  {{ $eq: ["$optt", "PE"] }}
+                ]
+              }}
+            }}
+          }}
+        ],
+        as: "peOption"
+      }}
+    }},
+    {{
+      $addFields: {{
+        ce_token: {{ $getField: {{ field: "token", input: {{ $arrayElemAt: ["$ceOption", 0] }} }} }},
+        ce_tsym: {{ $getField: {{ field: "tsym", input: {{ $arrayElemAt: ["$ceOption", 0] }} }} }},
+        pe_token: {{ $getField: {{ field: "token", input: {{ $arrayElemAt: ["$peOption", 0] }} }} }},
+        pe_tsym: {{ $getField: {{ field: "tsym", input: {{ $arrayElemAt: ["$peOption", 0] }} }} }}
+      }}
+    }},
+    {{
+      $unset: ["ceOption", "peOption"]
+    }},
+    {{
+      $lookup: {{
+        from: "OptionTick",
+        let: {{ ft: "$ft", token_var: "$ce_token" }},
+        pipeline: [
+          {{
+            $match: {{
+              $expr: {{
+                $and: [
+                  {{ $eq: ["$ft", "$$ft"] }},
+                  {{ $eq: ["$token", "$$token_var"] }}
+                ]
+              }}
+            }}
+          }}
+        ],
+        as: "ceTick"
+      }}
+    }},
+    {{
+      $lookup: {{
+        from: "OptionTick",
+        let: {{ ft: "$ft", token_var: "$pe_token" }},
+        pipeline: [
+          {{
+            $match: {{
+              $expr: {{
+                $and: [
+                  {{ $eq: ["$ft", "$$ft"] }},
+                  {{ $eq: ["$token", "$$token_var"] }}
+                ]
+              }}
+            }}
+          }}
+        ],
+        as: "peTick"
+      }}
+    }},
+    {{
+      $addFields: {{
+        ce_lp: {{ $getField: {{ field: "lp", input: {{ $arrayElemAt: ["$ceTick", 0] }} }} }},
+        pe_lp: {{ $getField: {{ field: "lp", input: {{ $arrayElemAt: ["$peTick", 0] }} }} }}
+      }}
+    }},
+    {{
+      $addFields: {{
+        sum_lp: {{ $round: [{{ $add: ["$ce_lp", "$pe_lp"] }}, 2] }},
+        diff: {{ $subtract: ["$pe_strike", "$ce_strike"] }}
+      }}
+    }},
+    {{
+      $addFields: {{
+        risk_prec: {{ 
+          $round: [
+            {{ 
+              $subtract: [
+                100, 
+                {{ 
+                  $multiply: [
+                    {{ 
+                      $cond: [
+                        {{ $eq: ["$sum_lp", 0] }}, 
+                        0, 
+                        {{ $divide: ["$diff", "$sum_lp"] }}
+                      ] 
+                    }}, 
+                    100
+                  ] 
+                }}
+              ] 
+            }}, 
+            2
+          ] 
+        }}
+      }}
+    }},
+    {{
+      $unset: ["ceTick", "peTick", "levels"]
+    }},
+    {{
+      $project: {{
+        level: 1,
+        ft: 1,
+        e: 1,
+        rt: 1,
+        lotsize: 1,
+        strkstep: 1,
+        ibase: "$ce_strike",
+        itop: "$pe_strike",
+        ilp: "$lp",
+        itoken: "$token",
+        its: "$ts",
+        ce_token: 1,
+        pe_token: 1,
+        ce_tsym: 1,
+        pe_tsym: 1,
+        ce_lp: 1,
+        pe_lp: 1,
+        sum_lp: 1,
+        risk_prec: 1
+      }}
+    }}
+  ]
+);
+
+print('v_option_pair_base view created successfully for database: {database_name}');
+"""
+        
+        # Create temporary script file
+        temp_script_path = os.path.join(os.path.dirname(__file__), "temp_views_script.js")
+        with open(temp_script_path, 'w') as f:
+            f.write(temp_script_content)
+        
+        try:
+            # Try mongosh first, then fall back to mongo
+            mongo_commands = ["mongosh", "mongo"]
+            
+            for mongo_cmd in mongo_commands:
+                try:
+                    # Check if the command exists
+                    check_cmd = subprocess.run([mongo_cmd, "--version"], 
+                                             capture_output=True, text=True, timeout=10)
+                    if check_cmd.returncode == 0:
+                        # Execute the MongoDB script
+                        if mongo_cmd == "mongosh":
+                            cmd = [mongo_cmd, "--quiet", "--file", temp_script_path]
+                        else:
+                            cmd = [mongo_cmd, "--quiet", temp_script_path]
+                        
+                        print(f"Executing MongoDB views script using {mongo_cmd} for database: {database_name}")
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                        
+                        if result.returncode == 0:
+                            print(f"MongoDB views script executed successfully for database: {database_name}")
+                            if result.stdout:
+                                print(f"Script output: {result.stdout}")
+                            return True
+                        else:
+                            print(f"MongoDB views script failed for database: {database_name}")
+                            print(f"Error: {result.stderr}")
+                            # Try the next command
+                            continue
+                            
+                except FileNotFoundError:
+                    # Command not found, try the next one
+                    continue
+                except subprocess.TimeoutExpired:
+                    print(f"Timeout while checking {mongo_cmd}")
+                    continue
+            
+            # If we get here, none of the MongoDB commands worked
+            print("Neither mongosh nor mongo command found or working")
+            return False
+                
+        finally:
+            # Clean up temporary script file
+            if os.path.exists(temp_script_path):
+                os.remove(temp_script_path)
+                
+    except Exception as e:
+        print(f"Exception while executing MongoDB views script: {str(e)}")
+        return False
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -84,19 +460,32 @@ class ConnectionManager:
             database = db.client[database_name]
             indextick_collection = database["IndexTick"]
             
+            # Check if OptionTick collection exists
+            try:
+                optiontick_collection = database["OptionTick"]  # Exact collection name
+                optiontick_exists = True
+                print(f"OptionTick collection found in database {database_name}")
+            except Exception as e:
+                print(f"OptionTick collection not found in database {database_name}: {e}")
+                optiontick_exists = False
+            
             print(f"Starting tick stream from database {database_name} with {interval_seconds}s interval")
             
-            # First, send ALL historical ticks one by one with interval
-            print("Sending all historical ticks one by one...")
+            # Stream IndexTick data and find matching OptionTick data for each
+            print("Starting synchronized IndexTick and OptionTick streaming...")
             cursor = indextick_collection.find({}).sort("ft", 1)  # Oldest first
             
             initial_count = 0
             async for doc in cursor:
                 # Check if stream was stopped
                 if not self.is_streaming or (self.tick_stream_task and self.tick_stream_task.done()):
-                    print("Tick stream was stopped during historical data send")
+                    print("DEBUG: Tick stream was stopped during streaming")
                     return
                 
+                # Get the feed time for this IndexTick
+                current_ft = doc.get("ft", 0)
+                
+                # Send IndexTick data
                 tick_data = TickData(
                     ft=doc.get("ft", 0),
                     token=doc.get("token", 0),
@@ -108,18 +497,44 @@ class ConnectionManager:
                     _id=str(doc.get("_id", ""))
                 )
                 
-                # Send each tick immediately
-                await self.broadcast(tick_data.json())
+                tick_dict = tick_data.dict()
+                tick_dict["data_type"] = "indextick"
+                await self.broadcast(json.dumps(tick_dict))
+                
+                # Find and send all OptionTick data with the same feed time
+                if optiontick_exists:
+                    option_cursor = optiontick_collection.find({"ft": current_ft})
+                    option_count = 0
+                    async for option_doc in option_cursor:
+                        option_tick_data = OptionTickData(
+                            ft=option_doc.get("ft", 0),
+                            token=option_doc.get("token", 0),
+                            e=option_doc.get("e", ""),
+                            lp=option_doc.get("lp", 0.0),
+                            pc=option_doc.get("pc", 0.0),
+                            rt=option_doc.get("rt", ""),
+                            ts=option_doc.get("ts", ""),
+                            _id=str(option_doc.get("_id", ""))
+                        )
+                        
+                        option_tick_dict = option_tick_data.dict()
+                        option_tick_dict["data_type"] = "optiontick"
+                        await self.broadcast(json.dumps(option_tick_dict))
+                        option_count += 1
+                    
+                    if option_count > 0:
+                        print(f"IndexTick {current_ft}: sent {option_count} matching OptionTicks")
+                
                 initial_count += 1
                 
-                # Apply interval between each tick for better control
+                # Apply interval between each IndexTick
                 await asyncio.sleep(interval_seconds)
                 
                 # Progress update every 100 ticks
                 if initial_count % 100 == 0:
-                    print(f"Sent {initial_count} historical ticks...")
+                    print(f"Processed {initial_count} IndexTicks...")
             
-            print(f"Sent {initial_count} historical ticks")
+            print(f"Completed streaming {initial_count} IndexTicks with matching OptionTicks")
             
             # Get the latest timestamp to start monitoring for new data
             latest_doc = await indextick_collection.find_one({}, sort=[("ft", -1)])
@@ -135,7 +550,7 @@ class ConnectionManager:
                     break
                 
                 try:
-                    # Query for new ticks since last_ft
+                    # Query for new index ticks since last_ft
                     cursor = indextick_collection.find(
                         {"ft": {"$gt": last_ft}}
                     ).sort("ft", 1)
@@ -148,10 +563,10 @@ class ConnectionManager:
                             return
                         
                         new_ticks_found = True
-                        # Update last_ft
-                        last_ft = doc.get("ft", last_ft)
+                        current_ft = doc.get("ft", 0)
+                        last_ft = current_ft
                         
-                        # Convert to TickData model
+                        # Send IndexTick data
                         tick_data = TickData(
                             ft=doc.get("ft", 0),
                             token=doc.get("token", 0),
@@ -163,8 +578,33 @@ class ConnectionManager:
                             _id=str(doc.get("_id", ""))
                         )
                         
-                        # Send to all connected clients
-                        await self.broadcast(tick_data.json())
+                        tick_dict = tick_data.dict()
+                        tick_dict["data_type"] = "indextick"
+                        await self.broadcast(json.dumps(tick_dict))
+                        
+                        # Find and send all OptionTick data with the same feed time
+                        if optiontick_exists:
+                            option_cursor = optiontick_collection.find({"ft": current_ft})
+                            option_count = 0
+                            async for option_doc in option_cursor:
+                                option_tick_data = OptionTickData(
+                                    ft=option_doc.get("ft", 0),
+                                    token=option_doc.get("token", 0),
+                                    e=option_doc.get("e", ""),
+                                    lp=option_doc.get("lp", 0.0),
+                                    pc=option_doc.get("pc", 0.0),
+                                    rt=option_doc.get("rt", ""),
+                                    ts=option_doc.get("ts", ""),
+                                    _id=str(option_doc.get("_id", ""))
+                                )
+                                
+                                option_tick_dict = option_tick_data.dict()
+                                option_tick_dict["data_type"] = "optiontick"
+                                await self.broadcast(json.dumps(option_tick_dict))
+                                option_count += 1
+                            
+                            if option_count > 0:
+                                print(f"New IndexTick {current_ft}: sent {option_count} matching OptionTicks")
                         
                         # Apply interval between each new tick
                         await asyncio.sleep(interval_seconds)
@@ -576,6 +1016,28 @@ async def unset_selected_database(current_user: User = Depends(get_admin_user)):
     selected_database_store["selected"] = ""
     return {"message": "Selected database has been unset."}
 
+@app.post("/api/execute-views/{database_name}")
+async def execute_views_for_database(database_name: str, current_user: User = Depends(get_admin_user)):
+    """Execute MongoDB analysis views script for a specific database"""
+    try:
+        # Validate that the database exists
+        databases = await db.client.list_database_names()
+        if database_name not in databases:
+            raise HTTPException(status_code=404, detail=f"Database '{database_name}' not found")
+        
+        # Execute MongoDB views script for the selected database
+        print(f"Executing MongoDB views script for database: {database_name}")
+        views_success = await execute_mongo_views_script(database_name)
+        
+        if views_success:
+            return {"message": f"MongoDB analysis views created successfully for database '{database_name}'", "success": True}
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to create MongoDB analysis views for database '{database_name}'")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error executing views script: {str(e)}")
+
 @app.post("/api/start-run", response_model=StartRunResponse)
 async def start_run(request: StartRunRequest, current_user: User = Depends(get_admin_user)):
     """Start a trading run with the specified database"""
@@ -585,6 +1047,15 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
         if request.database_name not in databases:
             raise HTTPException(status_code=404, detail=f"Database '{request.database_name}' not found")
         
+        # Execute MongoDB views script for the selected database
+        print(f"Executing MongoDB views script for database: {request.database_name}")
+        views_success = await execute_mongo_views_script(request.database_name)
+        if not views_success:
+            print(f"Warning: MongoDB views script execution failed for database: {request.database_name}")
+            # Continue with the run even if views creation fails
+        else:
+            print(f"MongoDB views created successfully for database: {request.database_name}")
+        
         # Store the selected database for the run
         selected_database_store["run_database"] = request.database_name
         selected_database_store["run_interval"] = request.interval_seconds
@@ -593,7 +1064,7 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
         await manager.start_tick_stream(request.database_name, request.interval_seconds)
         
         return StartRunResponse(
-            message=f"Trading run started with database '{request.database_name}'",
+            message=f"Trading run started with database '{request.database_name}'{' (views created)' if views_success else ' (views creation failed)'}",
             database_name=request.database_name,
             status="started",
             interval_seconds=request.interval_seconds

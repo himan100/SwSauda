@@ -65,6 +65,16 @@ class TickData(BaseModel):
     ts: str  # Trading symbol
     _id: Optional[str] = None
 
+class OptionTickData(BaseModel):
+    ft: int  # Feed time
+    token: int  # Token number
+    e: str  # Exchange (e.g., 'NSE')
+    lp: float  # Last price
+    pc: float  # Price change
+    rt: str  # Record time
+    ts: str  # Trading symbol
+    _id: Optional[str] = None
+
 class TickDataResponse(BaseModel):
     ticks: List[TickData]
     total_count: int
