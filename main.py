@@ -10,13 +10,16 @@ import json
 import asyncio
 import math
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
 
-from database import connect_to_mongo, close_mongo_connection, db
-from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse
+from database import connect_to_mongo, close_mongo_connection, db, get_database
+from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, 
+                   TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse,
+                   OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse)
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
-from crud import create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin
+from crud import (create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin,
+                 create_order, get_order_by_id, get_orders, update_order, delete_order)
 from config import settings
 
 # Store the currently selected database
@@ -624,8 +627,9 @@ class ConnectionManager:
         finally:
             print("Tick stream ended")
 
-# Create connection manager instance
+# Create connection manager instances
 manager = ConnectionManager()
+positions_manager = ConnectionManager()
 
 app = FastAPI(title="SwSauda", version="1.0.0")
 
@@ -1004,6 +1008,10 @@ async def databases_page(request: Request):
 async def trade_run_page(request: Request):
     return templates.TemplateResponse("trade_run.html", {"request": request})
 
+@app.get("/positions", response_class=HTMLResponse)
+async def positions_page(request: Request):
+    return templates.TemplateResponse("positions.html", {"request": request})
+
 @app.post("/api/trade-run")
 async def trade_run_api(database_name: str = Form(...), current_user: User = Depends(get_admin_user)):
     selected_database_store["selected"] = database_name
@@ -1327,6 +1335,407 @@ async def get_run_status(current_user: User = Depends(get_admin_user)):
         "is_stream_running": is_stream_running
     }
 
+# Orders API endpoints
+@app.post("/api/orders", response_model=Order)
+async def create_order_api(order: OrderCreate, current_user: User = Depends(get_current_active_user)):
+    """Create a new order"""
+    try:
+        # Set the user_id from the current user
+        order.user_id = current_user.id
+        new_order = await create_order(order)
+        
+        # Trigger WebSocket update
+        await broadcast_positions_update()
+        
+        return new_order
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/orders", response_model=List[Order])
+async def get_orders_api(
+    symbol: Optional[str] = None,
+    status: Optional[OrderStatus] = None,
+    limit: int = 100,
+    skip: int = 0,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get orders for the current user"""
+    try:
+        orders = await get_orders(user_id=current_user.id, symbol=symbol, status=status, limit=limit, skip=skip)
+        return orders
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/orders/{order_id}", response_model=Order)
+async def get_order_api(order_id: str, current_user: User = Depends(get_current_active_user)):
+    """Get a specific order by ID"""
+    try:
+        order = await get_order_by_id(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Check if the order belongs to the current user
+        if order.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        return order
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/orders/{order_id}", response_model=Order)
+async def update_order_api(
+    order_id: str, 
+    order_update: OrderUpdate, 
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update an order"""
+    try:
+        # First check if the order exists and belongs to the user
+        existing_order = await get_order_by_id(order_id)
+        if not existing_order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        if existing_order.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        updated_order = await update_order(order_id, order_update)
+        if not updated_order:
+            raise HTTPException(status_code=400, detail="Failed to update order")
+        
+        # Trigger WebSocket update
+        await broadcast_positions_update()
+        
+        return updated_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/orders/{order_id}")
+async def delete_order_api(order_id: str, current_user: User = Depends(get_current_active_user)):
+    """Delete an order"""
+    try:
+        # First check if the order exists and belongs to the user
+        existing_order = await get_order_by_id(order_id)
+        if not existing_order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        if existing_order.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        success = await delete_order(order_id)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to delete order")
+        
+        # Trigger WebSocket update
+        await broadcast_positions_update()
+        
+        return {"message": "Order deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Positions API endpoints
+@app.get("/api/positions", response_model=PositionResponse)
+async def get_positions_api(current_user: User = Depends(get_current_active_user)):
+    """Get positions for the current user"""
+    try:
+        db_instance = await get_database()
+        
+        # First ensure the positions view exists
+        await execute_position_views_script()
+        
+        # Query the positions view
+        positions_cursor = db_instance.v_positions.find({"user_id": current_user.id})
+        positions = []
+        
+        async for position in positions_cursor:
+            # Convert MongoDB document to PositionSummary
+            position_data = {
+                "symbol": position.get("symbol", ""),
+                "total_buy_quantity": position.get("total_buy_quantity", 0),
+                "total_sell_quantity": position.get("total_sell_quantity", 0),
+                "net_position": position.get("net_position", 0),
+                "total_buy_value": position.get("total_buy_value", 0.0),
+                "total_sell_value": position.get("total_sell_value", 0.0),
+                "average_buy_price": position.get("average_buy_price"),
+                "average_sell_price": position.get("average_sell_price"),
+                "open_buy_orders": position.get("open_buy_orders", 0),
+                "open_sell_orders": position.get("open_sell_orders", 0),
+                "open_buy_quantity": position.get("open_buy_quantity", 0),
+                "open_sell_quantity": position.get("open_sell_quantity", 0),
+                "open_buy_avg_price": position.get("open_buy_avg_price"),
+                "open_sell_avg_price": position.get("open_sell_avg_price"),
+                "realized_pnl": position.get("realized_pnl", 0.0),
+                "unrealized_pnl": 0.0,  # TODO: Calculate based on current market price
+                "current_price": None  # TODO: Get from market data
+            }
+            positions.append(PositionSummary(**position_data))
+        
+        return PositionResponse(positions=positions, total_positions=len(positions))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
+
+async def execute_position_views_script():
+    """Execute the MongoDB position views script"""
+    try:
+        db_instance = await get_database()
+        
+        # Drop existing view if it exists
+        try:
+            await db_instance.drop_collection("v_positions")
+        except:
+            pass
+        
+        # Create the positions view using aggregation pipeline
+        pipeline = [
+            {
+                "$group": {
+                    "_id": {
+                        "symbol": "$symbol",
+                        "user_id": "$user_id"
+                    },
+                    "total_buy_quantity": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "filled"]}]},
+                                "$filled_quantity",
+                                0
+                            ]
+                        }
+                    },
+                    "total_sell_quantity": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "filled"]}]},
+                                "$filled_quantity",
+                                0
+                            ]
+                        }
+                    },
+                    "total_buy_value": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "filled"]}]},
+                                {"$multiply": ["$filled_quantity", "$average_price"]},
+                                0
+                            ]
+                        }
+                    },
+                    "total_sell_value": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "filled"]}]},
+                                {"$multiply": ["$filled_quantity", "$average_price"]},
+                                0
+                            ]
+                        }
+                    },
+                    "open_buy_orders": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "pending"]}]},
+                                1,
+                                0
+                            ]
+                        }
+                    },
+                    "open_sell_orders": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "pending"]}]},
+                                1,
+                                0
+                            ]
+                        }
+                    },
+                    "open_buy_quantity": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "pending"]}]},
+                                {"$subtract": ["$quantity", "$filled_quantity"]},
+                                0
+                            ]
+                        }
+                    },
+                    "open_sell_quantity": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "pending"]}]},
+                                {"$subtract": ["$quantity", "$filled_quantity"]},
+                                0
+                            ]
+                        }
+                    },
+                    "open_buy_value": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "pending"]}, {"$ne": ["$price", None]}]},
+                                {"$multiply": [{"$subtract": ["$quantity", "$filled_quantity"]}, "$price"]},
+                                0
+                            ]
+                        }
+                    },
+                    "open_sell_value": {
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "pending"]}, {"$ne": ["$price", None]}]},
+                                {"$multiply": [{"$subtract": ["$quantity", "$filled_quantity"]}, "$price"]},
+                                0
+                            ]
+                        }
+                    }
+                }
+            },
+            {
+                "$addFields": {
+                    "symbol": "$_id.symbol",
+                    "user_id": "$_id.user_id",
+                    "net_position": {"$subtract": ["$total_buy_quantity", "$total_sell_quantity"]},
+                    "average_buy_price": {
+                        "$cond": [
+                            {"$gt": ["$total_buy_quantity", 0]},
+                            {"$divide": ["$total_buy_value", "$total_buy_quantity"]},
+                            None
+                        ]
+                    },
+                    "average_sell_price": {
+                        "$cond": [
+                            {"$gt": ["$total_sell_quantity", 0]},
+                            {"$divide": ["$total_sell_value", "$total_sell_quantity"]},
+                            None
+                        ]
+                    },
+                    "open_buy_avg_price": {
+                        "$cond": [
+                            {"$gt": ["$open_buy_quantity", 0]},
+                            {"$divide": ["$open_buy_value", "$open_buy_quantity"]},
+                            None
+                        ]
+                    },
+                    "open_sell_avg_price": {
+                        "$cond": [
+                            {"$gt": ["$open_sell_quantity", 0]},
+                            {"$divide": ["$open_sell_value", "$open_sell_quantity"]},
+                            None
+                        ]
+                    },
+                    "realized_pnl": {
+                        "$cond": [
+                            {"$and": [{"$gt": ["$total_buy_quantity", 0]}, {"$gt": ["$total_sell_quantity", 0]}]},
+                            {
+                                "$multiply": [
+                                    {"$min": ["$total_buy_quantity", "$total_sell_quantity"]},
+                                    {
+                                        "$subtract": [
+                                            {"$divide": ["$total_sell_value", "$total_sell_quantity"]},
+                                            {"$divide": ["$total_buy_value", "$total_buy_quantity"]}
+                                        ]
+                                    }
+                                ]
+                            },
+                            0
+                        ]
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "symbol": 1,
+                    "user_id": 1,
+                    "total_buy_quantity": 1,
+                    "total_sell_quantity": 1,
+                    "net_position": 1,
+                    "total_buy_value": 1,
+                    "total_sell_value": 1,
+                    "average_buy_price": 1,
+                    "average_sell_price": 1,
+                    "open_buy_orders": 1,
+                    "open_sell_orders": 1,
+                    "open_buy_quantity": 1,
+                    "open_sell_quantity": 1,
+                    "open_buy_avg_price": 1,
+                    "open_sell_avg_price": 1,
+                    "realized_pnl": 1
+                }
+            }
+        ]
+        
+        # Create the view
+        await db_instance.create_collection("v_positions", viewOn="orders", pipeline=pipeline)
+        
+    except Exception as e:
+        print(f"Error creating positions view: {e}")
+
+async def broadcast_positions_update():
+    """Broadcast position updates to all connected WebSocket clients"""
+    try:
+        # Get all users' positions (you might want to filter by user in a real implementation)
+        db_instance = await get_database()
+        positions_cursor = db_instance.v_positions.find({})
+        positions = []
+        
+        async for position in positions_cursor:
+            position_data = {
+                "symbol": position.get("symbol", ""),
+                "user_id": position.get("user_id", ""),
+                "total_buy_quantity": position.get("total_buy_quantity", 0),
+                "total_sell_quantity": position.get("total_sell_quantity", 0),
+                "net_position": position.get("net_position", 0),
+                "total_buy_value": position.get("total_buy_value", 0.0),
+                "total_sell_value": position.get("total_sell_value", 0.0),
+                "average_buy_price": position.get("average_buy_price"),
+                "average_sell_price": position.get("average_sell_price"),
+                "open_buy_orders": position.get("open_buy_orders", 0),
+                "open_sell_orders": position.get("open_sell_orders", 0),
+                "open_buy_quantity": position.get("open_buy_quantity", 0),
+                "open_sell_quantity": position.get("open_sell_quantity", 0),
+                "open_buy_avg_price": position.get("open_buy_avg_price"),
+                "open_sell_avg_price": position.get("open_sell_avg_price"),
+                "realized_pnl": position.get("realized_pnl", 0.0),
+                "unrealized_pnl": 0.0,
+                "current_price": None
+            }
+            positions.append(position_data)
+        
+        # Get recent orders
+        orders = await get_orders(limit=50)
+        orders_data = [
+            {
+                "id": order.id,
+                "symbol": order.symbol,
+                "quantity": order.quantity,
+                "filled_quantity": order.filled_quantity,
+                "side": order.side,
+                "order_type": order.order_type,
+                "price": order.price,
+                "status": order.status,
+                "created_at": order.created_at.isoformat() if order.created_at else None,
+                "average_price": order.average_price
+            }
+            for order in orders
+        ]
+        
+        # Broadcast to all connected clients
+        message = json.dumps({
+            "type": "positions_update",
+            "positions": positions
+        })
+        await positions_manager.broadcast(message)
+        
+        orders_message = json.dumps({
+            "type": "orders_update", 
+            "orders": orders_data
+        })
+        await positions_manager.broadcast(orders_message)
+        
+    except Exception as e:
+        print(f"Error broadcasting positions update: {e}")
+
 @app.websocket("/ws/tick-data")
 async def websocket_tick_data(websocket: WebSocket):
     """WebSocket endpoint for real-time tick data streaming"""
@@ -1382,6 +1791,22 @@ async def websocket_tick_data(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket connection error: {e}")
         manager.disconnect(websocket)
+
+@app.websocket("/ws/positions")
+async def websocket_positions(websocket: WebSocket):
+    """WebSocket endpoint for real-time positions and orders updates"""
+    await positions_manager.connect(websocket)
+    try:
+        while True:
+            # Send periodic position updates
+            await asyncio.sleep(1)
+            # Keep the connection alive
+            await websocket.ping()
+    except WebSocketDisconnect:
+        positions_manager.disconnect(websocket)
+    except Exception as e:
+        print(f"Positions WebSocket connection error: {e}")
+        positions_manager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 from database import get_database
-from models import UserCreate, UserUpdate, UserInDB, UserRole
+from models import UserCreate, UserUpdate, UserInDB, UserRole, OrderCreate, OrderUpdate, Order, OrderStatus
 from auth import get_password_hash, verify_password
 import bson
 
@@ -126,4 +126,92 @@ async def create_super_admin():
     }
     
     await db.users.insert_one(super_admin_data)
-    print("Super admin created successfully") 
+    print("Super admin created successfully")
+
+# Order CRUD operations
+async def create_order(order: OrderCreate) -> Order:
+    db = await get_database()
+    
+    now = datetime.utcnow()
+    order_data = {
+        "symbol": order.symbol,
+        "quantity": order.quantity,
+        "side": order.side,
+        "order_type": order.order_type,
+        "price": order.price,
+        "trigger_price": order.trigger_price,
+        "user_id": order.user_id,
+        "status": OrderStatus.PENDING,
+        "filled_quantity": 0,
+        "average_price": None,
+        "created_at": now,
+        "updated_at": now,
+        "filled_at": None
+    }
+    
+    result = await db.orders.insert_one(order_data)
+    order_data["id"] = str(result.inserted_id)
+    
+    return Order(**order_data)
+
+async def get_order_by_id(order_id: str) -> Optional[Order]:
+    db = await get_database()
+    try:
+        order = await db.orders.find_one({"_id": bson.ObjectId(order_id)})
+        if order:
+            order["id"] = str(order["_id"])
+            return Order(**order)
+    except bson.errors.InvalidId:
+        pass
+    return None
+
+async def get_orders(user_id: Optional[str] = None, symbol: Optional[str] = None, 
+                    status: Optional[OrderStatus] = None, limit: int = 100, skip: int = 0) -> List[Order]:
+    db = await get_database()
+    
+    filter_query = {}
+    if user_id:
+        filter_query["user_id"] = user_id
+    if symbol:
+        filter_query["symbol"] = symbol
+    if status:
+        filter_query["status"] = status
+    
+    cursor = db.orders.find(filter_query).sort("created_at", -1).skip(skip).limit(limit)
+    orders = []
+    
+    async for order in cursor:
+        order["id"] = str(order["_id"])
+        orders.append(Order(**order))
+    
+    return orders
+
+async def update_order(order_id: str, order_update: OrderUpdate) -> Optional[Order]:
+    db = await get_database()
+    
+    try:
+        update_data = {k: v for k, v in order_update.dict().items() if v is not None}
+        update_data["updated_at"] = datetime.utcnow()
+        
+        if order_update.status == OrderStatus.FILLED:
+            update_data["filled_at"] = datetime.utcnow()
+        
+        result = await db.orders.update_one(
+            {"_id": bson.ObjectId(order_id)},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count > 0:
+            return await get_order_by_id(order_id)
+    except bson.errors.InvalidId:
+        pass
+    
+    return None
+
+async def delete_order(order_id: str) -> bool:
+    db = await get_database()
+    try:
+        result = await db.orders.delete_one({"_id": bson.ObjectId(order_id)})
+        return result.deleted_count > 0
+    except bson.errors.InvalidId:
+        return False
