@@ -11,6 +11,7 @@ import asyncio
 import math
 from pathlib import Path
 from typing import List, Dict
+from zoneinfo import ZoneInfo
 
 from database import connect_to_mongo, close_mongo_connection, db
 from models import UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse
@@ -862,7 +863,7 @@ async def create_backup(database_name: str, current_user: User = Depends(get_adm
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Backup failed: {result.stderr}")
         
-        return {"message": f"Backup created successfully", "backup_path": str(pinaka_dir)}
+        return {"message": f"Backup created successfully", "backup_path": str(date_folder)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating backup: {str(e)}")
 
@@ -1039,6 +1040,120 @@ async def execute_views_for_database(database_name: str, current_user: User = De
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error executing views script: {str(e)}")
 
+async def calculate_trading_hours_to_expiry(rt: str, expiry_timestamp: int) -> int:
+    """
+    Calculate trading hours from rt to expiry considering market hours and weekdays.
+    
+    Args:
+        rt: Record time string (e.g., "2025-07-18 09:16:00")
+        expiry_timestamp: Expiry timestamp in seconds
+    
+    Returns:
+        Total trading hours until expiry
+    """
+    try:
+        # Set timezone to Asia/Kolkata
+        ist = ZoneInfo("Asia/Kolkata")
+        
+        # Convert expiry timestamp to datetime in IST
+        expiry_dt = datetime.fromtimestamp(expiry_timestamp, tz=ist)
+        print(f"Expiry datetime (IST): {expiry_dt}")
+        
+        # Parse rt datetime string (format: "2025-07-18 09:16:00")
+        try:
+            # Parse the rt datetime string
+            rt_dt = datetime.fromisoformat(rt)
+            # If rt doesn't have timezone info, assume it's in IST
+            if rt_dt.tzinfo is None:
+                rt_dt = rt_dt.replace(tzinfo=ist)
+            print(f"RT datetime (IST): {rt_dt}")
+        except ValueError:
+            print(f"Error parsing rt datetime: {rt}")
+            return 0
+        
+        # Calculate total unique days between rt and expiry
+        rt_date = rt_dt.date()
+        expiry_date = expiry_dt.date()
+        total_days = (expiry_date - rt_date).days
+        print(f"Total days between rt and expiry: {total_days}")
+        
+        if total_days < 0:
+            print("Expiry is in the past relative to rt")
+            return 0
+        
+        total_hours = 0
+        
+        # Market closing time is 15:30 (3:30 PM)
+        market_close_hour = 15
+        market_close_minute = 30
+        
+        # Calculate hours for day one (from rt to 15:30 or expiry)
+        if total_days == 0:
+            # Same day expiry - calculate hours from rt to expiry time
+            if expiry_dt.hour < market_close_hour or (expiry_dt.hour == market_close_hour and expiry_dt.minute <= market_close_minute):
+                # Expiry is before market close
+                rt_minutes = rt_dt.hour * 60 + rt_dt.minute
+                expiry_minutes = expiry_dt.hour * 60 + expiry_dt.minute
+                if expiry_minutes > rt_minutes:
+                    hours_day_one = (expiry_minutes - rt_minutes) / 60.0
+                    total_hours += hours_day_one
+                    print(f"Same day expiry - hours from rt to expiry: {hours_day_one}")
+            else:
+                # Expiry is after market close, count till market close
+                rt_minutes = rt_dt.hour * 60 + rt_dt.minute
+                market_close_minutes = market_close_hour * 60 + market_close_minute
+                if market_close_minutes > rt_minutes:
+                    hours_day_one = (market_close_minutes - rt_minutes) / 60.0
+                    total_hours += hours_day_one
+                    print(f"Same day - hours from rt to market close: {hours_day_one}")
+        else:
+            # Multi-day calculation
+            # Day 1: From rt to 15:30
+            rt_minutes = rt_dt.hour * 60 + rt_dt.minute
+            market_close_minutes = market_close_hour * 60 + market_close_minute
+            if market_close_minutes > rt_minutes:
+                hours_day_one = (market_close_minutes - rt_minutes) / 60.0
+                total_hours += hours_day_one
+                print(f"Day 1 ({rt_date}) - hours from rt to market close: {hours_day_one}")
+            
+            # Days 2 to expiry day: Add 6 hours for each weekday
+            current_check_date = rt_date + timedelta(days=1)
+            
+            while current_check_date <= expiry_date:
+                # Check if it's a weekday (Monday=0, Sunday=6)
+                if current_check_date.weekday() < 5:  # Monday to Friday
+                    if current_check_date == expiry_date:
+                        # On expiry day, calculate from market open to expiry time or market close
+                        market_open_minutes = 9 * 60 + 15  # 9:15 AM
+                        if expiry_dt.hour < market_close_hour or (expiry_dt.hour == market_close_hour and expiry_dt.minute <= market_close_minute):
+                            # Expiry is before market close
+                            expiry_minutes = expiry_dt.hour * 60 + expiry_dt.minute
+                            if expiry_minutes > market_open_minutes:
+                                hours_expiry_day = (expiry_minutes - market_open_minutes) / 60.0
+                                total_hours += hours_expiry_day
+                                print(f"Expiry day ({expiry_date}) - hours from market open to expiry: {hours_expiry_day}")
+                        else:
+                            # Expiry is after market close, count full trading day
+                            total_hours += 6  # Full trading day
+                            print(f"Expiry day ({expiry_date}) - full trading day: 6 hours")
+                    else:
+                        # Full trading day (6 hours)
+                        total_hours += 6
+                        print(f"Weekday {current_check_date} - full trading day: 6 hours")
+                else:
+                    print(f"Weekend {current_check_date} - skipped")
+                
+                current_check_date += timedelta(days=1)
+        
+        # Return floor of total hours
+        result = math.floor(total_hours)
+        print(f"Total trading hours to expiry: {result}")
+        return result
+        
+    except Exception as e:
+        print(f"Error in calculate_trading_hours_to_expiry: {str(e)}")
+        return 0
+
 @app.post("/api/start-run", response_model=StartRunResponse)
 async def start_run(request: StartRunRequest, current_user: User = Depends(get_admin_user)):
     """Start a trading run with the specified database"""
@@ -1075,9 +1190,10 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
             else:
                 ibase = v_index_base_doc[0].get('ibase')
                 index_ft = v_index_base_doc[0].get('ft')
-                print(f"Retrieved from v_index_base - ibase: {ibase}, index_ft: {index_ft}")
+                rt = v_index_base_doc[0].get('rt')  # Get rt from v_index_base
+                print(f"Retrieved from v_index_base - ibase: {ibase}, index_ft: {index_ft}, rt: {rt}")
                 
-                if ibase is not None and index_ft is not None:
+                if ibase is not None and index_ft is not None and rt is not None:
                     # Step 2: Get token from Option collection where ibase matches strprc and optt = "CE"
                     option_cursor = target_db.Option.find({"strprc": ibase, "optt": "CE"}).limit(1)
                     option_doc = await option_cursor.to_list(length=1)
@@ -1102,15 +1218,15 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
                                 print(f"Retrieved from FyersSymbolMaster - expiry: {expiry}")
                                 
                                 if expiry is not None:
-                                    # Step 4: Calculate hours for expiry
-                                    hours_for_expiry = math.floor((expiry - index_ft) / 3600)
+                                    # Step 4-6: Complex expiry calculation
+                                    hours_for_expiry = await calculate_trading_hours_to_expiry(rt, expiry)
                                     print(f"Calculated hours for expiry: {hours_for_expiry}")
                                 else:
                                     print("Warning: Expiry value is None")
                         else:
                             print("Warning: Option token is None")
                 else:
-                    print("Warning: ibase or index_ft is None")
+                    print("Warning: ibase, index_ft, or rt is None")
         except Exception as e:
             print(f"Error during expiry calculation: {str(e)}")
         
