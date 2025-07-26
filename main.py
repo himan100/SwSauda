@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -16,14 +16,43 @@ from zoneinfo import ZoneInfo
 from database import connect_to_mongo, close_mongo_connection, db, get_database
 from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, 
                    TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse,
-                   OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse)
+                   OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse,
+                   ParameterCreate, ParameterUpdate, Parameter)
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import (create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin,
-                 create_order, get_order_by_id, get_orders, update_order, delete_order)
+                 create_order, get_order_by_id, get_orders, update_order, delete_order,
+                 create_parameter, get_parameters, get_parameter_by_id, update_parameter, delete_parameter, get_parameter_categories)
 from config import settings
 
 # Store the currently selected database
 selected_database_store = {}
+
+def validate_parameter_value(value: str, datatype: str):
+    """Validate that a parameter value matches its specified datatype"""
+    try:
+        if datatype == 'int':
+            int(value)
+        elif datatype == 'double':
+            float(value)
+        elif datatype == 'boolean':
+            if value.lower() not in ['true', 'false', '1', '0', 'yes', 'no']:
+                raise ValueError(f"Value '{value}' is not a valid boolean")
+        elif datatype == 'date':
+            # Basic date format validation (YYYY-MM-DD)
+            import re
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', value):
+                raise ValueError(f"Value '{value}' is not a valid date format (YYYY-MM-DD)")
+        elif datatype == 'datetime':
+            # Basic datetime format validation (YYYY-MM-DD HH:MM:SS)
+            import re
+            if not re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$', value):
+                raise ValueError(f"Value '{value}' is not a valid datetime format (YYYY-MM-DD HH:MM:SS)")
+        elif datatype == 'json':
+            import json
+            json.loads(value)
+        # string type doesn't need validation
+    except (ValueError, json.JSONDecodeError) as e:
+        raise ValueError(f"Value '{value}' does not match datatype '{datatype}': {str(e)}")
 
 async def execute_mongo_views_script(database_name: str):
     """Execute the MongoDB analysis views script on the selected database"""
@@ -1012,6 +1041,10 @@ async def trade_run_page(request: Request):
 async def positions_page(request: Request):
     return templates.TemplateResponse("positions.html", {"request": request})
 
+@app.get("/parameters", response_class=HTMLResponse)
+async def parameters_page(request: Request):
+    return templates.TemplateResponse("parameters.html", {"request": request})
+
 @app.post("/api/trade-run")
 async def trade_run_api(database_name: str = Form(...), current_user: User = Depends(get_admin_user)):
     selected_database_store["selected"] = database_name
@@ -1437,6 +1470,247 @@ async def delete_order_api(order_id: str, current_user: User = Depends(get_curre
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Parameters API endpoints
+@app.post("/api/parameters", response_model=Parameter)
+async def create_parameter_api(parameter: ParameterCreate, current_user: User = Depends(get_current_active_user)):
+    """Create a new parameter"""
+    try:
+        # Validate datatype if specified
+        if parameter.datatype:
+            validate_parameter_value(parameter.value, parameter.datatype)
+        
+        created_parameter = await create_parameter(parameter, current_user.id)
+        return created_parameter
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/parameters", response_model=List[Parameter])
+async def get_parameters_api(
+    skip: int = 0,
+    limit: int = 100,
+    category: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get all parameters with optional filtering"""
+    try:
+        parameters = await get_parameters(skip=skip, limit=limit, category=category)
+        return parameters
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/parameters/{parameter_id}", response_model=Parameter)
+async def get_parameter_api(parameter_id: str, current_user: User = Depends(get_current_active_user)):
+    """Get a specific parameter by ID"""
+    try:
+        parameter = await get_parameter_by_id(parameter_id)
+        if not parameter:
+            raise HTTPException(status_code=404, detail="Parameter not found")
+        return parameter
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/parameters/{parameter_id}", response_model=Parameter)
+async def update_parameter_api(
+    parameter_id: str,
+    parameter_update: ParameterUpdate,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update a parameter"""
+    try:
+        # Validate datatype if both value and datatype are being updated
+        if parameter_update.value is not None and parameter_update.datatype:
+            validate_parameter_value(parameter_update.value, parameter_update.datatype)
+        elif parameter_update.value is not None:
+            # If only value is being updated, get the current parameter to check datatype
+            current_parameter = await get_parameter_by_id(parameter_id)
+            if current_parameter and current_parameter.datatype:
+                validate_parameter_value(parameter_update.value, current_parameter.datatype)
+        
+        updated_parameter = await update_parameter(parameter_id, parameter_update)
+        if not updated_parameter:
+            raise HTTPException(status_code=404, detail="Parameter not found")
+        return updated_parameter
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/parameters/{parameter_id}")
+async def delete_parameter_api(parameter_id: str, current_user: User = Depends(get_current_active_user)):
+    """Delete a parameter"""
+    try:
+        success = await delete_parameter(parameter_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Parameter not found")
+        return {"message": "Parameter deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/parameters/categories")
+async def get_parameter_categories_api(current_user: User = Depends(get_current_active_user)):
+    """Get all parameter categories"""
+    try:
+        categories = await get_parameter_categories()
+        return {"categories": categories}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/parameters/import")
+async def import_parameters_api(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Import parameters from Excel/CSV file"""
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        # Check file extension
+        if not file.filename.lower().endswith(('.xlsx', '.xls', '.csv')):
+            raise HTTPException(status_code=400, detail="Only Excel (.xlsx, .xls) and CSV files are supported")
+        
+        # Read file content
+        content = await file.read()
+        
+        # Parse based on file type
+        if file.filename.lower().endswith('.csv'):
+            import csv
+            import io
+            text = content.decode('utf-8')
+            csv_reader = csv.DictReader(io.StringIO(text))
+            data = list(csv_reader)
+        else:
+            # Excel file
+            import pandas as pd
+            import io
+            df = pd.read_excel(io.BytesIO(content))
+            data = df.to_dict('records')
+        
+        # Validate and import data
+        imported_count = 0
+        errors = []
+        
+        for row in data:
+            try:
+                # Validate required fields
+                if not row.get('name') or not row.get('value'):
+                    errors.append(f"Row missing required fields: {row}")
+                    continue
+                
+                # Create parameter
+                parameter_data = ParameterCreate(
+                    name=row['name'].strip(),
+                    value=str(row['value']).strip(),
+                    description=row.get('description', '').strip() if row.get('description') else None,
+                    category=row.get('category', '').strip() if row.get('category') else None,
+                    datatype=row.get('datatype', '').strip() if row.get('datatype') else None,
+                    is_active=row.get('is_active', True) if 'is_active' in row else True
+                )
+                
+                await create_parameter(parameter_data, current_user.id)
+                imported_count += 1
+                
+            except Exception as e:
+                errors.append(f"Error importing row {row}: {str(e)}")
+        
+        return {
+            "message": f"Import completed. {imported_count} parameters imported successfully.",
+            "imported_count": imported_count,
+            "errors": errors
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+@app.get("/api/parameters/template")
+async def download_parameter_template(current_user: User = Depends(get_current_active_user)):
+    """Download a sample Excel template for parameter imports"""
+    try:
+        import pandas as pd
+        import io
+        
+        # Create sample data
+        sample_data = [
+            {
+                'name': 'max_position_size',
+                'value': '1000',
+                'description': 'Maximum position size for any trade',
+                'category': 'Risk Management',
+                'datatype': 'int',
+                'is_active': True
+            },
+            {
+                'name': 'stop_loss_percentage',
+                'value': '2.5',
+                'description': 'Stop loss percentage for trades',
+                'category': 'Risk Management',
+                'datatype': 'double',
+                'is_active': True
+            },
+            {
+                'name': 'profit_target_percentage',
+                'value': '5.0',
+                'description': 'Profit target percentage for trades',
+                'category': 'Risk Management',
+                'datatype': 'double',
+                'is_active': True
+            },
+            {
+                'name': 'trading_hours_start',
+                'value': '09:15',
+                'description': 'Trading session start time',
+                'category': 'Trading Schedule',
+                'datatype': 'string',
+                'is_active': True
+            },
+            {
+                'name': 'trading_hours_end',
+                'value': '15:30',
+                'description': 'Trading session end time',
+                'category': 'Trading Schedule',
+                'datatype': 'string',
+                'is_active': True
+            },
+            {
+                'name': 'enable_auto_trading',
+                'value': 'true',
+                'description': 'Enable automatic trading',
+                'category': 'Trading Settings',
+                'datatype': 'boolean',
+                'is_active': True
+            }
+        ]
+        
+        # Create DataFrame
+        df = pd.DataFrame(sample_data)
+        
+        # Create Excel file in memory
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Parameters', index=False)
+        
+        output.seek(0)
+        
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            io.BytesIO(output.read()),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=parameters_template.xlsx"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate template: {str(e)}")
 
 # Positions API endpoints
 @app.get("/api/positions", response_model=PositionResponse)

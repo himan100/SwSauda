@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 from database import get_database
-from models import UserCreate, UserUpdate, UserInDB, UserRole, OrderCreate, OrderUpdate, Order, OrderStatus
+from models import UserCreate, UserUpdate, UserInDB, UserRole, OrderCreate, OrderUpdate, Order, OrderStatus, ParameterCreate, ParameterUpdate, Parameter
 from auth import get_password_hash, verify_password
 import bson
 
@@ -215,3 +215,114 @@ async def delete_order(order_id: str) -> bool:
         return result.deleted_count > 0
     except bson.errors.InvalidId:
         return False
+
+# Parameter CRUD functions
+async def create_parameter(parameter: ParameterCreate, user_id: str) -> Parameter:
+    db = await get_database()
+    
+    # Check if parameter with same name already exists
+    existing_parameter = await db.parameters.find_one({"name": parameter.name})
+    if existing_parameter:
+        raise ValueError("Parameter with this name already exists")
+    
+    now = datetime.utcnow()
+    parameter_data = {
+        "name": parameter.name,
+        "value": parameter.value,
+        "description": parameter.description,
+        "category": parameter.category,
+        "datatype": parameter.datatype,
+        "is_active": parameter.is_active,
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user_id
+    }
+    
+    result = await db.parameters.insert_one(parameter_data)
+    parameter_data["id"] = str(result.inserted_id)
+    
+    return Parameter(**parameter_data)
+
+async def get_parameters(skip: int = 0, limit: int = 100, category: Optional[str] = None) -> List[Parameter]:
+    db = await get_database()
+    parameters = []
+    
+    filter_query = {}
+    if category:
+        filter_query["category"] = category
+    
+    cursor = db.parameters.find(filter_query).skip(skip).limit(limit).sort("created_at", -1)
+    async for parameter in cursor:
+        parameter["id"] = str(parameter["_id"])
+        parameters.append(Parameter(**parameter))
+    return parameters
+
+async def get_parameter_by_id(parameter_id: str) -> Optional[Parameter]:
+    db = await get_database()
+    try:
+        parameter = await db.parameters.find_one({"_id": bson.ObjectId(parameter_id)})
+        if parameter:
+            parameter["id"] = str(parameter["_id"])
+            return Parameter(**parameter)
+    except bson.errors.InvalidId:
+        pass
+    return None
+
+async def get_parameter_by_name(name: str) -> Optional[Parameter]:
+    db = await get_database()
+    parameter = await db.parameters.find_one({"name": name})
+    if parameter:
+        parameter["id"] = str(parameter["_id"])
+        return Parameter(**parameter)
+    return None
+
+async def update_parameter(parameter_id: str, parameter_update: ParameterUpdate) -> Optional[Parameter]:
+    db = await get_database()
+    
+    update_data = {}
+    if parameter_update.name is not None:
+        # Check if name already exists for another parameter
+        existing_parameter = await db.parameters.find_one({
+            "name": parameter_update.name,
+            "_id": {"$ne": bson.ObjectId(parameter_id)}
+        })
+        if existing_parameter:
+            raise ValueError("Parameter with this name already exists")
+        update_data["name"] = parameter_update.name
+    
+    if parameter_update.value is not None:
+        update_data["value"] = parameter_update.value
+    if parameter_update.description is not None:
+        update_data["description"] = parameter_update.description
+    if parameter_update.category is not None:
+        update_data["category"] = parameter_update.category
+    if parameter_update.datatype is not None:
+        update_data["datatype"] = parameter_update.datatype
+    if parameter_update.is_active is not None:
+        update_data["is_active"] = parameter_update.is_active
+    
+    if update_data:
+        update_data["updated_at"] = datetime.utcnow()
+        try:
+            result = await db.parameters.update_one(
+                {"_id": bson.ObjectId(parameter_id)},
+                {"$set": update_data}
+            )
+            if result.modified_count:
+                return await get_parameter_by_id(parameter_id)
+        except bson.errors.InvalidId:
+            pass
+    return None
+
+async def delete_parameter(parameter_id: str) -> bool:
+    db = await get_database()
+    try:
+        result = await db.parameters.delete_one({"_id": bson.ObjectId(parameter_id)})
+        return result.deleted_count > 0
+    except bson.errors.InvalidId:
+        return False
+
+async def get_parameter_categories() -> List[str]:
+    db = await get_database()
+    categories = await db.parameters.distinct("category")
+    return [cat for cat in categories if cat]  # Filter out None values

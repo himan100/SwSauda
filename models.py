@@ -158,3 +158,33 @@ class PositionSummary(BaseModel):
 class PositionResponse(BaseModel):
     positions: List[PositionSummary]
     total_positions: int
+
+# Trade Parameters Models
+class ParameterBase(BaseModel):
+    name: str
+    value: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    datatype: Optional[str] = None  # int, double, string, boolean, date, datetime, json
+    is_active: bool = True
+
+
+
+class ParameterCreate(ParameterBase):
+    pass
+
+class ParameterUpdate(BaseModel):
+    name: Optional[str] = None
+    value: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    datatype: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+
+class Parameter(ParameterBase):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    created_by: str
