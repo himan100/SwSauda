@@ -83,7 +83,7 @@ def calculate_ema(prices: list, period: int) -> float:
 
 async def calculate_index_emas(database_name: str) -> dict:
     """
-    Calculate long and short EMAs for index ticks from Redis
+    Calculate long and short EMAs for index ticks from Redis with progressive calculation
     
     Args:
         database_name: Name of the database
@@ -96,7 +96,7 @@ async def calculate_index_emas(database_name: str) -> dict:
         long_length = await get_redis_tick_length()
         short_length = await get_redis_short_tick_length()
         
-        # Get index ticks from Redis
+        # Get all available index ticks from Redis (up to long_length)
         index_ticks = await get_ticks_from_redis(database_name, "indextick", long_length)
         
         if not index_ticks:
@@ -107,20 +107,34 @@ async def calculate_index_emas(database_name: str) -> dict:
         
         # Extract prices
         prices = [tick.get("lp", 0) for tick in index_ticks if tick.get("lp") is not None]
+        total_ticks = len(prices)
         
-        if len(prices) < min(long_length, short_length):
-            return {"long_ema": None, "short_ema": None}
+        # Calculate short EMA if we have enough ticks
+        short_ema = None
+        short_period_used = 0
+        if total_ticks >= short_length:
+            short_ema = calculate_ema(prices, short_length)
+            short_period_used = short_length
+        elif total_ticks > 0:
+            # If we have some ticks but not enough for short EMA, use all available
+            short_ema = calculate_ema(prices, total_ticks)
+            short_period_used = total_ticks
         
-        # Calculate EMAs
-        long_ema = calculate_ema(prices, long_length)
-        short_ema = calculate_ema(prices, short_length)
+        # Calculate long EMA using all available ticks (progressive)
+        long_ema = None
+        long_period_used = 0
+        if total_ticks > 0:
+            # Use all available ticks for long EMA (up to long_length)
+            actual_long_period = min(total_ticks, long_length)
+            long_ema = calculate_ema(prices, actual_long_period)
+            long_period_used = actual_long_period
         
         return {
             "long_ema": long_ema,
             "short_ema": short_ema,
-            "long_period": long_length,
-            "short_period": short_length,
-            "total_ticks": len(prices)
+            "long_period": long_period_used,
+            "short_period": short_period_used,
+            "total_ticks": total_ticks
         }
         
     except Exception as e:
