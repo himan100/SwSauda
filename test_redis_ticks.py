@@ -37,6 +37,22 @@ async def test_redis_tick_storage():
         except Exception as e:
             print(f"⚠️  Parameter creation failed (might already exist): {e}")
         
+        # Test 1.5: Create REDIS_SHORT_TICK_LENGTH parameter
+        print("\n1.5. Creating REDIS_SHORT_TICK_LENGTH parameter...")
+        try:
+            parameter_data = ParameterCreate(
+                name="REDIS_SHORT_TICK_LENGTH",
+                value="50",
+                description="Number of ticks to store in Redis for short EMA calculation",
+                category="Redis Configuration",
+                datatype="int",
+                is_active=True
+            )
+            await create_parameter(parameter_data, "test_user")
+            print("✅ REDIS_SHORT_TICK_LENGTH parameter created successfully")
+        except Exception as e:
+            print(f"⚠️  Parameter creation failed (might already exist): {e}")
+        
         # Test 2: Test Redis flushing
         print("\n2. Testing Redis flushing functionality...")
         database_name = "test_database"

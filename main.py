@@ -41,6 +41,92 @@ async def get_redis_tick_length() -> int:
         # Default value if parameter value is not a valid integer
         return 1000
 
+async def get_redis_short_tick_length() -> int:
+    """Get the REDIS_SHORT_TICK_LENGTH parameter from the database"""
+    try:
+        parameter = await get_parameter_by_name("REDIS_SHORT_TICK_LENGTH")
+        if parameter and parameter.is_active:
+            return int(parameter.value)
+        else:
+            # Default value if parameter not found or inactive
+            return 50
+    except (ValueError, TypeError):
+        # Default value if parameter value is not a valid integer
+        return 50
+
+def calculate_ema(prices: list, period: int) -> float:
+    """
+    Calculate Exponential Moving Average (EMA)
+    
+    Args:
+        prices: List of prices in chronological order (oldest first)
+        period: EMA period
+    
+    Returns:
+        EMA value
+    """
+    if not prices or len(prices) < period:
+        return None
+    
+    # Use Simple Moving Average (SMA) as the initial EMA value
+    sma = sum(prices[:period]) / period
+    
+    # Multiplier for EMA calculation
+    multiplier = 2 / (period + 1)
+    
+    # Calculate EMA
+    ema = sma
+    for price in prices[period:]:
+        ema = (price * multiplier) + (ema * (1 - multiplier))
+    
+    return round(ema, 2)
+
+async def calculate_index_emas(database_name: str) -> dict:
+    """
+    Calculate long and short EMAs for index ticks from Redis
+    
+    Args:
+        database_name: Name of the database
+        
+    Returns:
+        Dictionary with long_ema and short_ema values
+    """
+    try:
+        # Get the tick lengths for EMA calculations
+        long_length = await get_redis_tick_length()
+        short_length = await get_redis_short_tick_length()
+        
+        # Get index ticks from Redis
+        index_ticks = await get_ticks_from_redis(database_name, "indextick", long_length)
+        
+        if not index_ticks:
+            return {"long_ema": None, "short_ema": None}
+        
+        # Sort ticks by feed time (ft) in ascending order (oldest first)
+        index_ticks.sort(key=lambda x: x.get("ft", 0))
+        
+        # Extract prices
+        prices = [tick.get("lp", 0) for tick in index_ticks if tick.get("lp") is not None]
+        
+        if len(prices) < min(long_length, short_length):
+            return {"long_ema": None, "short_ema": None}
+        
+        # Calculate EMAs
+        long_ema = calculate_ema(prices, long_length)
+        short_ema = calculate_ema(prices, short_length)
+        
+        return {
+            "long_ema": long_ema,
+            "short_ema": short_ema,
+            "long_period": long_length,
+            "short_period": short_length,
+            "total_ticks": len(prices)
+        }
+        
+    except Exception as e:
+        print(f"Error calculating index EMAs: {e}")
+        return {"long_ema": None, "short_ema": None}
+
 async def flush_redis_for_database(database_name: str):
     """Flush Redis data for a specific database when trade run starts"""
     try:
@@ -680,6 +766,23 @@ class ConnectionManager:
                 # Store index tick in Redis
                 await store_tick_in_redis(tick_dict, "indextick", database_name)
                 
+                # Calculate and broadcast EMA data
+                try:
+                    ema_data = await calculate_index_emas(database_name)
+                    if ema_data["long_ema"] is not None or ema_data["short_ema"] is not None:
+                        ema_message = {
+                            "data_type": "ema_data",
+                            "long_ema": ema_data["long_ema"],
+                            "short_ema": ema_data["short_ema"],
+                            "long_period": ema_data["long_period"],
+                            "short_period": ema_data["short_period"],
+                            "total_ticks": ema_data["total_ticks"],
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        await self.broadcast(json.dumps(ema_message))
+                except Exception as e:
+                    print(f"Error calculating EMAs: {e}")
+                
                 # Find and send all OptionTick data with the same feed time
                 if optiontick_exists:
                     option_cursor = optiontick_collection.find({"ft": current_ft})
@@ -731,77 +834,108 @@ class ConnectionManager:
                     print("Tick stream was stopped during monitoring")
                     break
                 
-                try:
-                    # Query for new index ticks since last_ft
-                    cursor = indextick_collection.find(
-                        {"ft": {"$gt": last_ft}}
-                    ).sort("ft", 1)
+                # Check for new ticks
+                new_ticks = indextick_collection.find({"ft": {"$gt": last_ft}}).sort("ft", 1)
+                new_tick_count = 0
+                
+                async for new_doc in new_ticks:
+                    # Check if stream was stopped
+                    if not self.is_streaming or (self.tick_stream_task and self.tick_stream_task.done()):
+                        print("DEBUG: Tick stream was stopped during new tick monitoring")
+                        return
                     
-                    new_ticks_found = False
-                    async for doc in cursor:
-                        # Check if stream was stopped
-                        if not self.is_streaming or (self.tick_stream_task and self.tick_stream_task.done()):
-                            print("Tick stream was stopped during new tick processing")
-                            return
-                        
-                        new_ticks_found = True
-                        current_ft = doc.get("ft", 0)
-                        last_ft = current_ft
-                        
-                        # Send IndexTick data
-                        tick_data = TickData(
-                            ft=doc.get("ft", 0),
-                            token=doc.get("token", 0),
-                            e=doc.get("e", ""),
-                            lp=doc.get("lp", 0.0),
-                            pc=doc.get("pc", 0.0),
-                            rt=doc.get("rt", ""),
-                            ts=doc.get("ts", ""),
-                            _id=str(doc.get("_id", ""))
-                        )
-                        
-                        tick_dict = tick_data.dict()
-                        tick_dict["data_type"] = "indextick"
-                        await self.broadcast(json.dumps(tick_dict))
-                        
-                        # Find and send all OptionTick data with the same feed time
-                        if optiontick_exists:
-                            option_cursor = optiontick_collection.find({"ft": current_ft})
-                            option_count = 0
-                            async for option_doc in option_cursor:
-                                option_tick_data = OptionTickData(
-                                    ft=option_doc.get("ft", 0),
-                                    token=option_doc.get("token", 0),
-                                    e=option_doc.get("e", ""),
-                                    lp=option_doc.get("lp", 0.0),
-                                    pc=option_doc.get("pc", 0.0),
-                                    rt=option_doc.get("rt", ""),
-                                    ts=option_doc.get("ts", ""),
-                                    _id=str(option_doc.get("_id", ""))
-                                )
-                                
-                                option_tick_dict = option_tick_data.dict()
-                                option_tick_dict["data_type"] = "optiontick"
-                                await self.broadcast(json.dumps(option_tick_dict))
-                                
-                                # Store option tick in Redis
-                                await store_tick_in_redis(option_tick_dict, "optiontick", database_name)
-                                option_count += 1
+                    # Get the feed time for this IndexTick
+                    current_ft = new_doc.get("ft", 0)
+                    
+                    # Send IndexTick data
+                    tick_data = TickData(
+                        ft=new_doc.get("ft", 0),
+                        token=new_doc.get("token", 0),
+                        e=new_doc.get("e", ""),
+                        lp=new_doc.get("lp", 0.0),
+                        pc=new_doc.get("pc", 0.0),
+                        rt=new_doc.get("rt", ""),
+                        ts=new_doc.get("ts", ""),
+                        _id=str(new_doc.get("_id", ""))
+                    )
+                    
+                    tick_dict = tick_data.dict()
+                    tick_dict["data_type"] = "indextick"
+                    await self.broadcast(json.dumps(tick_dict))
+                    
+                    # Store index tick in Redis
+                    await store_tick_in_redis(tick_dict, "indextick", database_name)
+                    
+                    # Calculate and broadcast EMA data
+                    try:
+                        ema_data = await calculate_index_emas(database_name)
+                        if ema_data["long_ema"] is not None or ema_data["short_ema"] is not None:
+                            ema_message = {
+                                "data_type": "ema_data",
+                                "long_ema": ema_data["long_ema"],
+                                "short_ema": ema_data["short_ema"],
+                                "long_period": ema_data["long_period"],
+                                "short_period": ema_data["short_period"],
+                                "total_ticks": ema_data["total_ticks"],
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            await self.broadcast(json.dumps(ema_message))
+                    except Exception as e:
+                        print(f"Error calculating EMAs: {e}")
+                    
+                    # Find and send all OptionTick data with the same feed time
+                    if optiontick_exists:
+                        option_cursor = optiontick_collection.find({"ft": current_ft})
+                        option_count = 0
+                        async for option_doc in option_cursor:
+                            option_tick_data = OptionTickData(
+                                ft=option_doc.get("ft", 0),
+                                token=option_doc.get("token", 0),
+                                e=option_doc.get("e", ""),
+                                lp=option_doc.get("lp", 0.0),
+                                pc=option_doc.get("pc", 0.0),
+                                rt=option_doc.get("rt", ""),
+                                ts=option_doc.get("ts", ""),
+                                _id=str(option_doc.get("_id", ""))
+                            )
                             
-                            if option_count > 0:
-                                print(f"New IndexTick {current_ft}: sent {option_count} matching OptionTicks")
+                            option_tick_dict = option_tick_data.dict()
+                            option_tick_dict["data_type"] = "optiontick"
+                            await self.broadcast(json.dumps(option_tick_dict))
+                            
+                            # Store option tick in Redis
+                            await store_tick_in_redis(option_tick_dict, "optiontick", database_name)
+                            option_count += 1
                         
-                        # Apply interval between each new tick
-                        await asyncio.sleep(interval_seconds)
+                        if option_count > 0:
+                            print(f"New IndexTick {current_ft}: sent {option_count} matching OptionTicks")
                     
-                    if not new_ticks_found:
-                        # No new ticks, wait for the configured interval
-                        await asyncio.sleep(interval_seconds)
-                    
+                    new_tick_count += 1
+                    last_ft = current_ft
+                
+                if new_tick_count > 0:
+                    print(f"Processed {new_tick_count} new IndexTicks")
+                
+                # Calculate and broadcast EMA data periodically (even if no new ticks)
+                try:
+                    ema_data = await calculate_index_emas(database_name)
+                    if ema_data["long_ema"] is not None or ema_data["short_ema"] is not None:
+                        ema_message = {
+                            "data_type": "ema_data",
+                            "long_ema": ema_data["long_ema"],
+                            "short_ema": ema_data["short_ema"],
+                            "long_period": ema_data["long_period"],
+                            "short_period": ema_data["short_period"],
+                            "total_ticks": ema_data["total_ticks"],
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        await self.broadcast(json.dumps(ema_message))
                 except Exception as e:
-                    print(f"Error in tick stream: {e}")
-                    await asyncio.sleep(5)  # Wait longer on error
-                    
+                    print(f"Error calculating EMAs: {e}")
+                
+                # Apply interval between checks
+                await asyncio.sleep(interval_seconds)
+            
         except Exception as e:
             print(f"Error starting tick stream: {e}")
         finally:
@@ -1575,6 +1709,29 @@ async def get_run_status(current_user: User = Depends(get_admin_user)):
         "is_stream_running": is_stream_running
     }
 
+@app.get("/api/index-emas")
+async def get_index_emas(current_user: User = Depends(get_admin_user)):
+    """Get long and short EMA calculations for index ticks"""
+    try:
+        # Get the database name from the run
+        database_name = selected_database_store.get("run_database")
+        if not database_name:
+            raise HTTPException(status_code=400, detail="No active run. Please start a run first.")
+        
+        # Calculate EMAs
+        ema_data = await calculate_index_emas(database_name)
+        
+        return {
+            "database_name": database_name,
+            "long_ema": ema_data["long_ema"],
+            "short_ema": ema_data["short_ema"],
+            "long_period": ema_data["long_period"],
+            "short_period": ema_data["short_period"],
+            "total_ticks": ema_data["total_ticks"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calculating EMAs: {str(e)}")
+
 # Orders API endpoints
 @app.post("/api/orders", response_model=Order)
 async def create_order_api(order: OrderCreate, current_user: User = Depends(get_current_active_user)):
@@ -2288,6 +2445,111 @@ async def websocket_positions(websocket: WebSocket):
     except Exception as e:
         print(f"Positions WebSocket connection error: {e}")
         positions_manager.disconnect(websocket)
+
+@app.websocket("/ws/ema-data")
+async def websocket_ema_data(websocket: WebSocket):
+    """WebSocket endpoint for real-time EMA data streaming"""
+    await manager.connect(websocket)
+    try:
+        # Send initial connection message
+        await manager.send_personal_message(
+            json.dumps({"type": "connection", "message": "Connected to EMA data stream"}),
+            websocket
+        )
+        
+        # Keep connection alive and handle messages
+        while True:
+            try:
+                # Wait for messages from client
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle different message types
+                if message.get("type") == "start_ema_stream":
+                    database_name = message.get("database_name")
+                    interval_seconds = message.get("interval_seconds", 1.0)
+                    if database_name:
+                        # Start periodic EMA calculation and streaming
+                        await manager.send_personal_message(
+                            json.dumps({
+                                "type": "ema_stream_started", 
+                                "database": database_name,
+                                "interval_seconds": interval_seconds
+                            }),
+                            websocket
+                        )
+                        
+                        # Start EMA streaming task
+                        print(f"Starting EMA streaming task for database: {database_name}")
+                        asyncio.create_task(stream_ema_data(websocket, database_name, interval_seconds))
+                
+                elif message.get("type") == "stop_ema_stream":
+                    await manager.send_personal_message(
+                        json.dumps({"type": "ema_stream_stopped"}),
+                        websocket
+                    )
+                
+            except WebSocketDisconnect:
+                manager.disconnect(websocket)
+                break
+            except Exception as e:
+                print(f"EMA WebSocket error: {e}")
+                await manager.send_personal_message(
+                    json.dumps({"type": "error", "message": str(e)}),
+                    websocket
+                )
+                
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"EMA WebSocket connection error: {e}")
+        manager.disconnect(websocket)
+
+async def stream_ema_data(websocket: WebSocket, database_name: str, interval_seconds: float = 1.0):
+    """Stream EMA data from Redis at regular intervals"""
+    print(f"EMA streaming task started for database: {database_name}")
+    try:
+        while True:
+            print(f"EMA streaming loop iteration for {database_name}")
+            
+            # Check if WebSocket is still connected
+            try:
+                await websocket.ping()
+                print(f"WebSocket ping successful for {database_name}")
+            except:
+                print(f"EMA WebSocket disconnected for {database_name}")
+                break
+            
+            # Calculate EMAs from Redis data
+            try:
+                print(f"Calculating EMAs for {database_name}...")
+                ema_data = await calculate_index_emas(database_name)
+                print(f"EMA calculation result: {ema_data}")
+                
+                # Send EMA data if at least one EMA is available
+                if ema_data["long_ema"] is not None or ema_data["short_ema"] is not None:
+                    ema_message = {
+                        "data_type": "ema_data",
+                        "long_ema": ema_data["long_ema"],
+                        "short_ema": ema_data["short_ema"],
+                        "long_period": ema_data["long_period"],
+                        "short_period": ema_data["short_period"],
+                        "total_ticks": ema_data["total_ticks"],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    await websocket.send_text(json.dumps(ema_message))
+                    print(f"Sent EMA data: {ema_message}")
+                else:
+                    print("No EMA data available to send")
+            except Exception as e:
+                print(f"Error calculating EMAs: {e}")
+            
+            # Wait for next interval
+            print(f"Waiting {interval_seconds} seconds before next EMA calculation...")
+            await asyncio.sleep(interval_seconds)
+            
+    except Exception as e:
+        print(f"Error in EMA streaming: {e}")
 
 if __name__ == "__main__":
     import uvicorn

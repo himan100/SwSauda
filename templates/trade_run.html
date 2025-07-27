@@ -187,6 +187,33 @@
                         <br>
                         <span class="text-blue-600">Stream interval: <span class="font-mono">[[ actualInterval ]]s</span></span>
                     </div>
+                    
+                    <!-- EMA Calculations Section -->
+                    <div v-if="tickData.length > 0" class="mt-4">
+                        <div class="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                            <h3 class="text-sm font-semibold text-purple-800 mb-3 text-center">EMA Calculations</h3>
+                            <div v-if="emaData" class="grid grid-cols-2 gap-4 text-sm">
+                                <div class="text-center">
+                                    <div class="text-xs text-gray-600 mb-1">Long EMA ([[ emaData.long_period ]] ticks)</div>
+                                    <div class="text-lg font-bold text-purple-700">[[ emaData.long_ema || 'N/A' ]]</div>
+                                </div>
+                                <div class="text-center">
+                                    <div class="text-xs text-gray-600 mb-1">Short EMA ([[ emaData.short_period ]] ticks)</div>
+                                    <div class="text-lg font-bold text-purple-700">[[ emaData.short_ema || 'N/A' ]]</div>
+                                </div>
+                            </div>
+                            <div v-else class="text-center">
+                                <div class="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-purple-600 mb-2"></div>
+                                <p class="text-xs text-gray-500">Calculating EMAs...</p>
+                            </div>
+                            <div v-if="emaData && emaData.long_ema && emaData.short_ema" class="mt-3 text-center">
+                                <div class="text-xs text-gray-600 mb-1">Signal</div>
+                                <div class="text-sm font-semibold" :class="emaData.short_ema > emaData.long_ema ? 'text-green-600' : 'text-red-600'">
+                                    [[ emaData.short_ema > emaData.long_ema ? 'BULLISH' : 'BEARISH' ]]
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -309,7 +336,8 @@ createApp({
                     isWebSocketConnected: false,
                     streamInterval: 1.0,  // Default interval in seconds
                     actualInterval: 1.0,   // Actual interval being used by backend
-                    hoursForExpiry: null   // Hours for expiry calculation
+                    hoursForExpiry: null,   // Hours for expiry calculation
+                    emaData: null // Data for EMA calculations
                 }
             },
     mounted() {
@@ -344,6 +372,7 @@ createApp({
                 this.totalTicks = 0;
                 this.optionTickData = [];
                 this.totalOptionTicks = 0;
+                this.emaData = null; // Clear EMA data when run stops
                 // WebSocket disconnection will be handled in stopRun method
             }
         }
@@ -398,6 +427,7 @@ createApp({
                 this.totalTicks = 0;
                 this.optionTickData = [];
                 this.totalOptionTicks = 0;
+                this.emaData = null; // Clear EMA data when unsetting database
             } catch (e) {
                 this.message = e.response?.data?.detail || 'Error unsetting database';
             }
@@ -449,7 +479,7 @@ createApp({
                     this.websocket.close();
                 }
                 
-                // Connect to WebSocket
+                // Connect to WebSocket for tick data
                 this.websocket = new WebSocket(`ws://${window.location.host}/ws/tick-data`);
                 
                 this.websocket.onopen = () => {
@@ -480,6 +510,9 @@ createApp({
                         } else if (data.data_type === 'optiontick') {
                             // This is option tick data
                             this.handleOptionTickData(data);
+                        } else if (data.data_type === 'ema_data') {
+                            // This is EMA data
+                            this.handleEMAData(data);
                         } else {
                             // This is regular tick data (indextick)
                             this.handleTickData(data);
@@ -522,6 +555,9 @@ createApp({
             
             // Update total count
             this.totalOptionTicks++;
+        },
+        handleEMAData(emaData) {
+            this.emaData = emaData;
         },
         async startRun() {
             if (!this.selectedDatabase) {
@@ -585,6 +621,7 @@ createApp({
                 this.totalTicks = 0;
                 this.optionTickData = [];
                 this.totalOptionTicks = 0;
+                this.emaData = null; // Clear EMA data when stopping run
                 
             } catch (e) {
                 this.message = e.response?.data?.detail || 'Error stopping run';
@@ -596,6 +633,7 @@ createApp({
                 this.totalTicks = 0;
                 this.optionTickData = [];
                 this.totalOptionTicks = 0;
+                this.emaData = null;
                 this.isWebSocketConnected = false;
             }
         },
