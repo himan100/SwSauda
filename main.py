@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
 
-from database import connect_to_mongo, close_mongo_connection, db, get_database
+from database import connect_to_mongo, connect_to_redis, close_mongo_connection, close_redis_connection, db, get_database, redis_client
 from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, 
                    TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse,
                    OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse,
@@ -21,11 +21,71 @@ from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB,
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import (create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin,
                  create_order, get_order_by_id, get_orders, update_order, delete_order,
-                 create_parameter, get_parameters, get_parameter_by_id, update_parameter, delete_parameter, get_parameter_categories)
+                 create_parameter, get_parameters, get_parameter_by_id, update_parameter, delete_parameter, get_parameter_categories, get_parameter_by_name)
 from config import settings
 
 # Store the currently selected database
 selected_database_store = {}
+
+# Redis tick storage functions
+async def get_redis_tick_length() -> int:
+    """Get the REDIS_LONG_TICK_LENGTH parameter from the database"""
+    try:
+        parameter = await get_parameter_by_name("REDIS_LONG_TICK_LENGTH")
+        if parameter and parameter.is_active:
+            return int(parameter.value)
+        else:
+            # Default value if parameter not found or inactive
+            return 1000
+    except (ValueError, TypeError):
+        # Default value if parameter value is not a valid integer
+        return 1000
+
+async def store_tick_in_redis(tick_data: dict, tick_type: str, database_name: str):
+    """Store tick data in Redis with FIFO behavior"""
+    try:
+        # Get the maximum number of ticks to store
+        max_ticks = await get_redis_tick_length()
+        
+        # Create Redis key for this tick type and database
+        redis_key = f"ticks:{database_name}:{tick_type}"
+        
+        # Add the tick data to the list
+        tick_json = json.dumps(tick_data)
+        await redis_client.lpush(redis_key, tick_json)
+        
+        # Trim the list to keep only the latest max_ticks
+        await redis_client.ltrim(redis_key, 0, max_ticks - 1)
+        
+        print(f"Stored {tick_type} tick in Redis for database {database_name}")
+    except Exception as e:
+        print(f"Error storing tick in Redis: {e}")
+
+async def get_ticks_from_redis(database_name: str, tick_type: str, limit: int = None) -> list:
+    """Get ticks from Redis for a specific database and tick type"""
+    try:
+        redis_key = f"ticks:{database_name}:{tick_type}"
+        
+        if limit:
+            # Get the latest 'limit' number of ticks
+            tick_jsons = await redis_client.lrange(redis_key, 0, limit - 1)
+        else:
+            # Get all ticks
+            tick_jsons = await redis_client.lrange(redis_key, 0, -1)
+        
+        # Parse JSON strings back to dictionaries
+        ticks = []
+        for tick_json in tick_jsons:
+            try:
+                tick_data = json.loads(tick_json)
+                ticks.append(tick_data)
+            except json.JSONDecodeError:
+                continue
+        
+        return ticks
+    except Exception as e:
+        print(f"Error getting ticks from Redis: {e}")
+        return []
 
 def validate_parameter_value(value: str, datatype: str):
     """Validate that a parameter value matches its specified datatype"""
@@ -535,6 +595,9 @@ class ConnectionManager:
                 tick_dict["data_type"] = "indextick"
                 await self.broadcast(json.dumps(tick_dict))
                 
+                # Store index tick in Redis
+                await store_tick_in_redis(tick_dict, "indextick", database_name)
+                
                 # Find and send all OptionTick data with the same feed time
                 if optiontick_exists:
                     option_cursor = optiontick_collection.find({"ft": current_ft})
@@ -554,6 +617,9 @@ class ConnectionManager:
                         option_tick_dict = option_tick_data.dict()
                         option_tick_dict["data_type"] = "optiontick"
                         await self.broadcast(json.dumps(option_tick_dict))
+                        
+                        # Store option tick in Redis
+                        await store_tick_in_redis(option_tick_dict, "optiontick", database_name)
                         option_count += 1
                     
                     if option_count > 0:
@@ -635,6 +701,9 @@ class ConnectionManager:
                                 option_tick_dict = option_tick_data.dict()
                                 option_tick_dict["data_type"] = "optiontick"
                                 await self.broadcast(json.dumps(option_tick_dict))
+                                
+                                # Store option tick in Redis
+                                await store_tick_in_redis(option_tick_dict, "optiontick", database_name)
                                 option_count += 1
                             
                             if option_count > 0:
@@ -672,11 +741,13 @@ templates = Jinja2Templates(directory="templates")
 @app.on_event("startup")
 async def startup_event():
     await connect_to_mongo()
+    await connect_to_redis()
     await create_super_admin()
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await close_mongo_connection()
+    await close_redis_connection()
 
 # Authentication routes
 @app.post("/api/login", response_model=Token)
@@ -1354,6 +1425,35 @@ async def get_tick_data(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching tick data: {str(e)}")
+
+@app.get("/api/redis-ticks/{tick_type}")
+async def get_redis_ticks(
+    tick_type: str,
+    limit: int = 100,
+    current_user: User = Depends(get_admin_user)
+):
+    """Get tick data from Redis for a specific tick type"""
+    try:
+        # Get the database name from the run
+        database_name = selected_database_store.get("run_database")
+        if not database_name:
+            raise HTTPException(status_code=400, detail="No active run. Please start a run first.")
+        
+        # Validate tick type
+        if tick_type not in ["indextick", "optiontick"]:
+            raise HTTPException(status_code=400, detail="Invalid tick type. Must be 'indextick' or 'optiontick'")
+        
+        # Get ticks from Redis
+        ticks = await get_ticks_from_redis(database_name, tick_type, limit)
+        
+        return {
+            "ticks": ticks,
+            "total_count": len(ticks),
+            "database_name": database_name,
+            "tick_type": tick_type
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching Redis tick data: {str(e)}")
 
 @app.get("/api/run-status")
 async def get_run_status(current_user: User = Depends(get_admin_user)):

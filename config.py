@@ -21,6 +21,9 @@ class Settings:
             self.host: str = env.get("HOST", "0.0.0.0")
             self.port: int = int(env.get("PORT", 8000))
             self.reload: bool = env.get("RELOAD", "true").lower() == "true"
+            # Redis configuration
+            self.redis_url: str = env.get("REDIS_URL", "redis://localhost:6379")
+            self.redis_db: int = int(env.get("REDIS_DB", 0))
         else:
             # Production: use environment variables if set, fallback to .env
             self.mongodb_url: str = config("MONGODB_URL", default="mongodb://localhost:27017")
@@ -34,5 +37,8 @@ class Settings:
             self.host: str = config("HOST", default="0.0.0.0")
             self.port: int = config("PORT", default=8000, cast=int)
             self.reload: bool = config("RELOAD", default=True, cast=bool)
+            # Redis configuration
+            self.redis_url: str = config("REDIS_URL", default="redis://localhost:6379")
+            self.redis_db: int = config("REDIS_DB", default=0, cast=int)
 
 settings = Settings() 
