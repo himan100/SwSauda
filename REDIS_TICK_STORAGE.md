@@ -1,91 +1,110 @@
-# Redis Tick Storage Feature
+# Enhanced Redis Tick Storage Feature
 
 ## Overview
 
-The Redis Tick Storage feature automatically stores tick data in Redis when a trading run is started on the `/trade-run` route. This provides fast access to recent tick data and implements a FIFO (First In, First Out) behavior with configurable limits.
+The Enhanced Redis Tick Storage feature automatically stores tick data in Redis when a trading run is started on the `/trade-run` route. This provides fast access to recent tick data with improved functionality including automatic flushing, proper sorting, and per-token option tick storage.
 
-## Features
+## Enhanced Features
 
-### 1. Automatic Tick Storage
-- **Index Ticks**: All IndexTick data is automatically stored in Redis when streaming
-- **Option Ticks**: All OptionTick data is automatically stored in Redis when streaming
-- **Real-time Storage**: Ticks are stored as they are streamed via WebSocket
-- **Database Isolation**: Ticks are stored per database to avoid conflicts
+### 1. Automatic Redis Flushing
+- **Clean Start**: Redis data is automatically flushed when a trading run starts
+- **Database Isolation**: Only data for the specific database is cleared
+- **Fresh Data**: Ensures only current trading session data is stored
 
-### 2. Configurable Storage Limits
-- **Parameter-based**: Storage limit is controlled by `REDIS_LONG_TICK_LENGTH` parameter
-- **Default Value**: 1000 ticks if parameter is not set
-- **FIFO Behavior**: When limit is reached, oldest ticks are automatically removed
-- **Separate Limits**: Index and option ticks have separate storage limits
+### 2. Proper Tick Sorting
+- **Index Ticks**: Stored in chronological order (latest first)
+- **Option Ticks**: Sorted by feed time (ft) in descending order when retrieved
+- **Multi-token Sorting**: All option ticks across tokens are properly sorted
 
-### 3. Redis Data Structure
-- **Key Format**: `ticks:{database_name}:{tick_type}`
-  - Example: `ticks:N_20250718:indextick`
-  - Example: `ticks:N_20250718:optiontick`
-- **Data Format**: JSON strings stored in Redis lists
-- **Ordering**: Latest ticks are at the beginning of the list (LPUSH)
+### 3. Per-Token Option Tick Storage
+- **Separate Storage**: Each option token has its own Redis key
+- **Individual Limits**: Each token maintains its own FIFO limit
+- **Token Isolation**: Option ticks for different tokens are stored separately
 
-### 4. API Endpoints
-- **GET /api/redis-ticks/{tick_type}**: Retrieve ticks from Redis
-  - `tick_type`: `indextick` or `optiontick`
-  - `limit`: Number of ticks to retrieve (default: 100)
+### 4. Enhanced Data Structure
+- **Index Ticks**: `ticks:{database_name}:indextick`
+- **Option Ticks**: `ticks:{database_name}:optiontick:{token}`
+- **Example Keys**:
+  - `ticks:N_20250718:indextick`
+  - `ticks:N_20250718:optiontick:26001`
+  - `ticks:N_20250718:optiontick:26002`
 
-## Configuration
+## API Endpoints
 
-### Redis Setup
-1. **Install Redis**: Ensure Redis server is running
-2. **Environment Variables**: Add to `.env` file:
-   ```
-   REDIS_URL=redis://localhost:6379
-   REDIS_DB=0
-   ```
+### GET /api/redis-ticks/{tick_type}
+Retrieve tick data from Redis for a specific tick type.
 
-### Parameter Configuration
-1. **Create Parameter**: Add `REDIS_LONG_TICK_LENGTH` parameter via the Parameters page
-2. **Parameter Details**:
-   - **Name**: `REDIS_LONG_TICK_LENGTH`
-   - **Value**: Number of ticks to store (e.g., `1000`)
-   - **Category**: `Redis Configuration`
-   - **Data Type**: `int`
-   - **Active**: `true`
+**Parameters:**
+- `tick_type`: `indextick` or `optiontick`
+- `limit`: Number of ticks to retrieve (default: 100)
+- `token`: For option ticks, specify token to get ticks for that token only
+
+**Examples:**
+```bash
+# Get index ticks
+GET /api/redis-ticks/indextick?limit=100
+
+# Get all option ticks (all tokens, sorted by ft)
+GET /api/redis-ticks/optiontick?limit=100
+
+# Get option ticks for specific token
+GET /api/redis-ticks/optiontick?limit=100&token=26001
+```
+
+### GET /api/redis-option-tokens
+Get list of option tokens that have data in Redis.
+
+**Response:**
+```json
+{
+  "tokens": ["26001", "26002", "26003"],
+  "total_count": 3,
+  "database_name": "N_20250718"
+}
+```
 
 ## Implementation Details
 
-### Storage Process
-1. **Tick Reception**: When a tick is received during streaming
-2. **JSON Serialization**: Tick data is converted to JSON string
-3. **Redis Storage**: JSON is pushed to Redis list using LPUSH
-4. **Limit Enforcement**: List is trimmed to maintain configured limit
-5. **FIFO Maintenance**: Oldest ticks are automatically removed
+### Redis Flushing Process
+1. **Trade Run Start**: When `/api/start-run` is called
+2. **Pattern Matching**: Find all keys matching `ticks:{database_name}:*`
+3. **Bulk Deletion**: Delete all matching keys using Redis DEL command
+4. **Clean Slate**: Ensure fresh start for new trading session
 
-### Retrieval Process
-1. **Key Construction**: Redis key is built from database name and tick type
-2. **Data Retrieval**: JSON strings are retrieved from Redis list
-3. **JSON Parsing**: Strings are parsed back to Python dictionaries
-4. **Error Handling**: Invalid JSON is skipped gracefully
+### Enhanced Storage Process
+1. **Index Ticks**: Stored in single key with LPUSH + LTRIM
+2. **Option Ticks**: Stored per token with separate keys
+3. **FIFO Maintenance**: Each key maintains its own limit
+4. **Automatic Cleanup**: Oldest ticks removed when limit reached
 
-### Error Handling
-- **Redis Connection**: Graceful handling of Redis connection failures
-- **JSON Parsing**: Invalid JSON data is skipped
-- **Parameter Errors**: Default values used if parameter is invalid
-- **Storage Errors**: Errors are logged but don't stop tick streaming
+### Retrieval and Sorting Process
+1. **Index Ticks**: Direct retrieval from single key
+2. **Option Ticks**: 
+   - Single token: Direct retrieval from token-specific key
+   - All tokens: Collect from all token keys, then sort by ft
+3. **Sorting**: Option ticks sorted by feed time (ft) in descending order
+4. **Limit Application**: Apply limit after sorting for accurate results
 
 ## Usage Examples
 
-### Starting a Trading Run
+### Starting a Trading Run (with Redis Flushing)
 ```bash
-# Start a trading run (automatically enables Redis storage)
 POST /api/start-run
 {
   "database_name": "N_20250718",
   "interval_seconds": 1.0
 }
+
+# This automatically:
+# 1. Flushes existing Redis data for N_20250718
+# 2. Starts tick streaming with Redis storage
+# 3. Stores index ticks in ticks:N_20250718:indextick
+# 4. Stores option ticks per token in ticks:N_20250718:optiontick:{token}
 ```
 
 ### Retrieving Index Ticks
 ```bash
-# Get latest 100 index ticks
-GET /api/redis-ticks/indextick?limit=100
+GET /api/redis-ticks/indextick?limit=50
 
 # Response
 {
@@ -104,102 +123,158 @@ GET /api/redis-ticks/indextick?limit=100
   ],
   "total_count": 1,
   "database_name": "N_20250718",
-  "tick_type": "indextick"
+  "tick_type": "indextick",
+  "token": null
 }
 ```
 
-### Retrieving Option Ticks
+### Retrieving All Option Ticks (Sorted)
 ```bash
-# Get latest 50 option ticks
-GET /api/redis-ticks/optiontick?limit=50
+GET /api/redis-ticks/optiontick?limit=100
+
+# Response includes ticks from all tokens, sorted by ft (latest first)
+{
+  "ticks": [
+    {
+      "ft": 1752810305,
+      "token": 26001,
+      "e": "NSE",
+      "lp": 125.50,
+      "pc": -0.02,
+      "rt": "2025-07-18 09:15:05",
+      "ts": "NIFTY25JUL25100CE",
+      "_id": "...",
+      "data_type": "optiontick"
+    }
+  ],
+  "total_count": 1,
+  "database_name": "N_20250718",
+  "tick_type": "optiontick",
+  "token": null
+}
+```
+
+### Retrieving Option Ticks for Specific Token
+```bash
+GET /api/redis-ticks/optiontick?limit=50&token=26001
+
+# Response includes only ticks for token 26001
+{
+  "ticks": [...],
+  "total_count": 1,
+  "database_name": "N_20250718",
+  "tick_type": "optiontick",
+  "token": "26001"
+}
+```
+
+### Getting Available Option Tokens
+```bash
+GET /api/redis-option-tokens
+
+# Response
+{
+  "tokens": ["26001", "26002", "26003"],
+  "total_count": 3,
+  "database_name": "N_20250718"
+}
 ```
 
 ## Performance Considerations
 
 ### Memory Usage
-- **Storage Size**: Each tick is approximately 200-300 bytes in JSON format
-- **Memory Calculation**: 1000 ticks × 300 bytes = ~300KB per tick type
-- **Total Memory**: ~600KB for both index and option ticks per database
+- **Index Ticks**: ~300KB for 1000 ticks
+- **Option Ticks**: ~300KB per token for 1000 ticks
+- **Total Memory**: Depends on number of active option tokens
 
 ### Redis Operations
 - **Write Operations**: LPUSH + LTRIM for each tick (2 operations)
-- **Read Operations**: LRANGE for retrieval
-- **Performance**: Redis lists provide O(1) push/pop operations
+- **Flush Operations**: KEYS + DEL for database cleanup
+- **Read Operations**: LRANGE for retrieval, additional sorting for multi-token option ticks
 
 ### Scalability
-- **Database Isolation**: Each database has separate Redis keys
-- **Memory Management**: Automatic cleanup via LTRIM
-- **Connection Pooling**: Efficient Redis connection handling
+- **Token Isolation**: Each option token has independent storage
+- **Memory Management**: Automatic cleanup per token
+- **Efficient Sorting**: Only when retrieving all option ticks
 
 ## Monitoring and Debugging
 
 ### Redis Commands
 ```bash
-# Check Redis keys
-redis-cli KEYS "ticks:*"
+# Check all keys for a database
+redis-cli KEYS "ticks:N_20250718:*"
 
-# Get tick count for a specific database and type
+# Get tick count for index
 redis-cli LLEN "ticks:N_20250718:indextick"
 
-# View latest ticks
+# Get tick count for specific option token
+redis-cli LLEN "ticks:N_20250718:optiontick:26001"
+
+# View latest index ticks
 redis-cli LRANGE "ticks:N_20250718:indextick" 0 4
 
-# Clear all tick data
-redis-cli DEL "ticks:N_20250718:indextick"
-redis-cli DEL "ticks:N_20250718:optiontick"
+# View latest option ticks for specific token
+redis-cli LRANGE "ticks:N_20250718:optiontick:26001" 0 4
+
+# Clear all data for a database
+redis-cli KEYS "ticks:N_20250718:*" | xargs redis-cli DEL
 ```
 
 ### Logging
+- **Flush Logs**: Database flush confirmation with key count
 - **Storage Logs**: Success/failure messages for each tick storage
+- **Token Logs**: Option token storage confirmation
 - **Error Logs**: Detailed error information for debugging
-- **Performance Logs**: Storage timing and memory usage
 
 ## Testing
 
 ### Test Script
-Run the test script to verify Redis functionality:
+Run the enhanced test script to verify all functionality:
 ```bash
 python test_redis_ticks.py
 ```
 
 ### Manual Testing
 1. **Start Trading Run**: Start a run on `/trade-run` page
-2. **Monitor Logs**: Check console for Redis storage messages
+2. **Monitor Flush**: Check console for Redis flush messages
 3. **Verify Storage**: Use Redis CLI to check stored data
 4. **Test API**: Use API endpoints to retrieve stored ticks
+5. **Check Sorting**: Verify option ticks are properly sorted
+6. **Test Tokens**: Verify per-token storage and retrieval
 
 ## Troubleshooting
 
 ### Common Issues
 
-#### Redis Connection Failed
+#### Redis Flush Not Working
 ```
-Error: Failed to connect to Redis
-Solution: Ensure Redis server is running and accessible
-```
-
-#### Parameter Not Found
-```
-Error: REDIS_LONG_TICK_LENGTH parameter not found
-Solution: Create the parameter via Parameters page
+Error: Redis flush failed
+Solution: Check Redis connection and permissions
 ```
 
-#### Memory Issues
+#### Option Ticks Not Sorted
 ```
-Error: Redis memory usage too high
-Solution: Reduce REDIS_LONG_TICK_LENGTH parameter value
+Error: Option ticks appear in wrong order
+Solution: Verify ft field values and sorting logic
+```
+
+#### Token-Specific Retrieval Failing
+```
+Error: Cannot retrieve ticks for specific token
+Solution: Check token parameter and key format
 ```
 
 ### Debug Steps
 1. **Check Redis Status**: `redis-cli ping`
-2. **Verify Parameter**: Check Parameters page for `REDIS_LONG_TICK_LENGTH`
-3. **Monitor Logs**: Check application logs for error messages
-4. **Test Connection**: Run test script to verify functionality
+2. **Verify Keys**: `redis-cli KEYS "ticks:*"`
+3. **Check Token Keys**: `redis-cli KEYS "ticks:*:optiontick:*"`
+4. **Monitor Logs**: Check application logs for error messages
+5. **Test API**: Use API endpoints to verify functionality
 
 ## Future Enhancements
 
 ### Planned Features
-- **Tick Compression**: Compress tick data to reduce memory usage
+- **Compression**: Compress tick data to reduce memory usage
 - **TTL Support**: Automatic expiration of old tick data
 - **Analytics**: Tick storage statistics and monitoring
 - **Backup/Restore**: Redis data backup and restoration

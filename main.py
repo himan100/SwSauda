@@ -41,36 +41,98 @@ async def get_redis_tick_length() -> int:
         # Default value if parameter value is not a valid integer
         return 1000
 
+async def flush_redis_for_database(database_name: str):
+    """Flush Redis data for a specific database when trade run starts"""
+    try:
+        # Get all keys for this database
+        pattern = f"ticks:{database_name}:*"
+        keys = await redis_client.keys(pattern)
+        
+        if keys:
+            # Delete all keys for this database
+            await redis_client.delete(*keys)
+            print(f"Flushed Redis data for database {database_name}: {len(keys)} keys deleted")
+        else:
+            print(f"No existing Redis data found for database {database_name}")
+    except Exception as e:
+        print(f"Error flushing Redis for database {database_name}: {e}")
+
 async def store_tick_in_redis(tick_data: dict, tick_type: str, database_name: str):
-    """Store tick data in Redis with FIFO behavior"""
+    """Store tick data in Redis with FIFO behavior and proper sorting"""
     try:
         # Get the maximum number of ticks to store
         max_ticks = await get_redis_tick_length()
         
-        # Create Redis key for this tick type and database
-        redis_key = f"ticks:{database_name}:{tick_type}"
-        
-        # Add the tick data to the list
-        tick_json = json.dumps(tick_data)
-        await redis_client.lpush(redis_key, tick_json)
-        
-        # Trim the list to keep only the latest max_ticks
-        await redis_client.ltrim(redis_key, 0, max_ticks - 1)
+        if tick_type == "indextick":
+            # For index ticks, use a single key
+            redis_key = f"ticks:{database_name}:{tick_type}"
+            
+            # Add the tick data to the list
+            tick_json = json.dumps(tick_data)
+            await redis_client.lpush(redis_key, tick_json)
+            
+            # Trim the list to keep only the latest max_ticks
+            await redis_client.ltrim(redis_key, 0, max_ticks - 1)
+            
+        elif tick_type == "optiontick":
+            # For option ticks, store per token
+            token = tick_data.get("token", "unknown")
+            redis_key = f"ticks:{database_name}:{tick_type}:{token}"
+            
+            # Add the tick data to the list
+            tick_json = json.dumps(tick_data)
+            await redis_client.lpush(redis_key, tick_json)
+            
+            # Trim the list to keep only the latest max_ticks per token
+            await redis_client.ltrim(redis_key, 0, max_ticks - 1)
         
         print(f"Stored {tick_type} tick in Redis for database {database_name}")
     except Exception as e:
         print(f"Error storing tick in Redis: {e}")
 
-async def get_ticks_from_redis(database_name: str, tick_type: str, limit: int = None) -> list:
+async def get_ticks_from_redis(database_name: str, tick_type: str, limit: int = None, token: str = None) -> list:
     """Get ticks from Redis for a specific database and tick type"""
     try:
-        redis_key = f"ticks:{database_name}:{tick_type}"
+        if tick_type == "indextick":
+            redis_key = f"ticks:{database_name}:{tick_type}"
+        elif tick_type == "optiontick":
+            if token:
+                # Get ticks for specific token
+                redis_key = f"ticks:{database_name}:{tick_type}:{token}"
+            else:
+                # Get all option ticks (all tokens)
+                pattern = f"ticks:{database_name}:{tick_type}:*"
+                keys = await redis_client.keys(pattern)
+                all_ticks = []
+                
+                for key in keys:
+                    if limit:
+                        tick_jsons = await redis_client.lrange(key, 0, limit - 1)
+                    else:
+                        tick_jsons = await redis_client.lrange(key, 0, -1)
+                    
+                    for tick_json in tick_jsons:
+                        try:
+                            tick_data = json.loads(tick_json)
+                            all_ticks.append(tick_data)
+                        except json.JSONDecodeError:
+                            continue
+                
+                # Sort by feed time (ft) in descending order (latest first)
+                all_ticks.sort(key=lambda x: x.get("ft", 0), reverse=True)
+                
+                # Apply limit if specified
+                if limit:
+                    all_ticks = all_ticks[:limit]
+                
+                return all_ticks
+        else:
+            return []
         
+        # For index ticks or specific token option ticks
         if limit:
-            # Get the latest 'limit' number of ticks
             tick_jsons = await redis_client.lrange(redis_key, 0, limit - 1)
         else:
-            # Get all ticks
             tick_jsons = await redis_client.lrange(redis_key, 0, -1)
         
         # Parse JSON strings back to dictionaries
@@ -85,6 +147,26 @@ async def get_ticks_from_redis(database_name: str, tick_type: str, limit: int = 
         return ticks
     except Exception as e:
         print(f"Error getting ticks from Redis: {e}")
+        return []
+
+async def get_option_tokens_from_redis(database_name: str) -> list:
+    """Get list of option tokens that have data in Redis"""
+    try:
+        pattern = f"ticks:{database_name}:optiontick:*"
+        keys = await redis_client.keys(pattern)
+        
+        # Extract token numbers from keys
+        tokens = []
+        for key in keys:
+            # Key format: ticks:database:optiontick:token
+            parts = key.split(":")
+            if len(parts) >= 4:
+                token = parts[3]
+                tokens.append(token)
+        
+        return tokens
+    except Exception as e:
+        print(f"Error getting option tokens from Redis: {e}")
         return []
 
 def validate_parameter_value(value: str, datatype: str):
@@ -1346,6 +1428,9 @@ async def start_run(request: StartRunRequest, current_user: User = Depends(get_a
         selected_database_store["run_database"] = request.database_name
         selected_database_store["run_interval"] = request.interval_seconds
         
+        # Flush Redis data for this database to ensure clean start
+        await flush_redis_for_database(request.database_name)
+        
         # Start WebSocket tick stream with the provided interval
         await manager.start_tick_stream(request.database_name, request.interval_seconds)
         
@@ -1430,6 +1515,7 @@ async def get_tick_data(
 async def get_redis_ticks(
     tick_type: str,
     limit: int = 100,
+    token: str = None,
     current_user: User = Depends(get_admin_user)
 ):
     """Get tick data from Redis for a specific tick type"""
@@ -1444,16 +1530,37 @@ async def get_redis_ticks(
             raise HTTPException(status_code=400, detail="Invalid tick type. Must be 'indextick' or 'optiontick'")
         
         # Get ticks from Redis
-        ticks = await get_ticks_from_redis(database_name, tick_type, limit)
+        ticks = await get_ticks_from_redis(database_name, tick_type, limit, token)
         
         return {
             "ticks": ticks,
             "total_count": len(ticks),
             "database_name": database_name,
-            "tick_type": tick_type
+            "tick_type": tick_type,
+            "token": token
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching Redis tick data: {str(e)}")
+
+@app.get("/api/redis-option-tokens")
+async def get_redis_option_tokens(current_user: User = Depends(get_admin_user)):
+    """Get list of option tokens that have data in Redis"""
+    try:
+        # Get the database name from the run
+        database_name = selected_database_store.get("run_database")
+        if not database_name:
+            raise HTTPException(status_code=400, detail="No active run. Please start a run first.")
+        
+        # Get option tokens from Redis
+        tokens = await get_option_tokens_from_redis(database_name)
+        
+        return {
+            "tokens": tokens,
+            "total_count": len(tokens),
+            "database_name": database_name
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching Redis option tokens: {str(e)}")
 
 @app.get("/api/run-status")
 async def get_run_status(current_user: User = Depends(get_admin_user)):

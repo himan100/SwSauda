@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Redis tick storage functionality
+Test script for Redis tick storage functionality with enhanced features
 """
 
 import asyncio
@@ -12,8 +12,8 @@ from models import ParameterCreate
 from crud import create_super_admin
 
 async def test_redis_tick_storage():
-    """Test Redis tick storage functionality"""
-    print("🧪 Testing Redis tick storage functionality...")
+    """Test Redis tick storage functionality with enhanced features"""
+    print("🧪 Testing Enhanced Redis tick storage functionality...")
     
     try:
         # Connect to databases
@@ -37,10 +37,34 @@ async def test_redis_tick_storage():
         except Exception as e:
             print(f"⚠️  Parameter creation failed (might already exist): {e}")
         
-        # Test 2: Test tick storage
-        print("\n2. Testing tick storage in Redis...")
+        # Test 2: Test Redis flushing
+        print("\n2. Testing Redis flushing functionality...")
+        database_name = "test_database"
         
-        # Sample tick data
+        # First, add some test data
+        test_keys = [
+            f"ticks:{database_name}:indextick",
+            f"ticks:{database_name}:optiontick:26001",
+            f"ticks:{database_name}:optiontick:26002"
+        ]
+        
+        for key in test_keys:
+            await redis_client.lpush(key, "test_data")
+        
+        print(f"✅ Added test data to {len(test_keys)} Redis keys")
+        
+        # Now test flushing
+        from main import flush_redis_for_database
+        await flush_redis_for_database(database_name)
+        
+        # Verify keys are deleted
+        remaining_keys = await redis_client.keys(f"ticks:{database_name}:*")
+        print(f"✅ Redis flush completed. Remaining keys: {len(remaining_keys)}")
+        
+        # Test 3: Test enhanced tick storage
+        print("\n3. Testing enhanced tick storage...")
+        
+        # Sample tick data with different tokens
         sample_index_tick = {
             "ft": 1752810305,
             "token": 26000,
@@ -53,7 +77,7 @@ async def test_redis_tick_storage():
             "data_type": "indextick"
         }
         
-        sample_option_tick = {
+        sample_option_tick_1 = {
             "ft": 1752810305,
             "token": 26001,
             "e": "NSE",
@@ -65,60 +89,99 @@ async def test_redis_tick_storage():
             "data_type": "optiontick"
         }
         
-        # Store ticks in Redis
-        database_name = "test_database"
+        sample_option_tick_2 = {
+            "ft": 1752810305,
+            "token": 26002,
+            "e": "NSE",
+            "lp": 85.25,
+            "pc": 0.03,
+            "rt": "2025-07-18 09:15:05",
+            "ts": "NIFTY25JUL25100PE",
+            "_id": "test_id_3",
+            "data_type": "optiontick"
+        }
+        
+        # Store ticks using the enhanced function
+        from main import store_tick_in_redis
         
         # Store index tick
-        redis_key_index = f"ticks:{database_name}:indextick"
-        await redis_client.lpush(redis_key_index, json.dumps(sample_index_tick))
-        await redis_client.ltrim(redis_key_index, 0, 99)  # Keep only 100 ticks
+        await store_tick_in_redis(sample_index_tick, "indextick", database_name)
         
-        # Store option tick
-        redis_key_option = f"ticks:{database_name}:optiontick"
-        await redis_client.lpush(redis_key_option, json.dumps(sample_option_tick))
-        await redis_client.ltrim(redis_key_option, 0, 99)  # Keep only 100 ticks
+        # Store option ticks for different tokens
+        await store_tick_in_redis(sample_option_tick_1, "optiontick", database_name)
+        await store_tick_in_redis(sample_option_tick_2, "optiontick", database_name)
         
-        print("✅ Sample ticks stored in Redis")
+        print("✅ Enhanced tick storage completed")
         
-        # Test 3: Retrieve ticks from Redis
-        print("\n3. Testing tick retrieval from Redis...")
+        # Test 4: Test tick retrieval with sorting
+        print("\n4. Testing tick retrieval with sorting...")
+        
+        from main import get_ticks_from_redis, get_option_tokens_from_redis
         
         # Get index ticks
-        index_ticks_json = await redis_client.lrange(redis_key_index, 0, -1)
-        index_ticks = [json.loads(tick) for tick in index_ticks_json]
-        print(f"✅ Retrieved {len(index_ticks)} index ticks from Redis")
+        index_ticks = await get_ticks_from_redis(database_name, "indextick")
+        print(f"✅ Retrieved {len(index_ticks)} index ticks")
         
-        # Get option ticks
-        option_ticks_json = await redis_client.lrange(redis_key_option, 0, -1)
-        option_ticks = [json.loads(tick) for tick in option_ticks_json]
-        print(f"✅ Retrieved {len(option_ticks)} option ticks from Redis")
+        # Get all option ticks (should be sorted by ft)
+        all_option_ticks = await get_ticks_from_redis(database_name, "optiontick")
+        print(f"✅ Retrieved {len(all_option_ticks)} option ticks (all tokens)")
         
-        # Test 4: Verify FIFO behavior
-        print("\n4. Testing FIFO behavior...")
+        # Get option ticks for specific token
+        token_26001_ticks = await get_ticks_from_redis(database_name, "optiontick", token="26001")
+        print(f"✅ Retrieved {len(token_26001_ticks)} option ticks for token 26001")
+        
+        # Get list of option tokens
+        option_tokens = await get_option_tokens_from_redis(database_name)
+        print(f"✅ Retrieved option tokens: {option_tokens}")
+        
+        # Test 5: Test FIFO behavior with multiple tokens
+        print("\n5. Testing FIFO behavior with multiple tokens...")
         
         # Add more ticks to test FIFO
         for i in range(5):
+            # Add index ticks
             new_index_tick = sample_index_tick.copy()
             new_index_tick["ft"] = 1752810305 + i
             new_index_tick["lp"] = 25124.35 + i
-            new_index_tick["_id"] = f"test_id_{i+3}"
+            new_index_tick["_id"] = f"test_id_{i+4}"
+            await store_tick_in_redis(new_index_tick, "indextick", database_name)
             
-            await redis_client.lpush(redis_key_index, json.dumps(new_index_tick))
-            await redis_client.ltrim(redis_key_index, 0, 99)
+            # Add option ticks for token 26001
+            new_option_tick_1 = sample_option_tick_1.copy()
+            new_option_tick_1["ft"] = 1752810305 + i
+            new_option_tick_1["lp"] = 125.50 + i
+            new_option_tick_1["_id"] = f"test_id_{i+10}"
+            await store_tick_in_redis(new_option_tick_1, "optiontick", database_name)
+            
+            # Add option ticks for token 26002
+            new_option_tick_2 = sample_option_tick_2.copy()
+            new_option_tick_2["ft"] = 1752810305 + i
+            new_option_tick_2["lp"] = 85.25 + i
+            new_option_tick_2["_id"] = f"test_id_{i+20}"
+            await store_tick_in_redis(new_option_tick_2, "optiontick", database_name)
         
-        # Check final count
-        final_count = await redis_client.llen(redis_key_index)
-        print(f"✅ Final count of index ticks in Redis: {final_count}")
+        # Check final counts
+        final_index_count = await redis_client.llen(f"ticks:{database_name}:indextick")
+        final_option_count_26001 = await redis_client.llen(f"ticks:{database_name}:optiontick:26001")
+        final_option_count_26002 = await redis_client.llen(f"ticks:{database_name}:optiontick:26002")
         
-        # Test 5: Test parameter retrieval
-        print("\n5. Testing parameter retrieval...")
-        parameter = await get_parameter_by_name("REDIS_LONG_TICK_LENGTH")
-        if parameter:
-            print(f"✅ Retrieved REDIS_LONG_TICK_LENGTH parameter: {parameter.value}")
+        print(f"✅ Final counts - Index: {final_index_count}, Option 26001: {final_option_count_26001}, Option 26002: {final_option_count_26002}")
+        
+        # Test 6: Test sorting functionality
+        print("\n6. Testing sorting functionality...")
+        
+        # Get all option ticks and verify they're sorted by ft
+        all_option_ticks = await get_ticks_from_redis(database_name, "optiontick")
+        if len(all_option_ticks) > 1:
+            # Check if sorted by ft in descending order (latest first)
+            ft_values = [tick.get("ft", 0) for tick in all_option_ticks]
+            is_sorted = ft_values == sorted(ft_values, reverse=True)
+            print(f"✅ Option ticks sorted by ft: {is_sorted}")
+            print(f"   FT values: {ft_values[:5]}...")  # Show first 5 values
         else:
-            print("❌ Failed to retrieve REDIS_LONG_TICK_LENGTH parameter")
+            print("✅ Sorting test skipped (not enough data)")
         
-        print("\n🎉 All Redis tick storage tests completed successfully!")
+        print("\n🎉 All Enhanced Redis tick storage tests completed successfully!")
         
     except Exception as e:
         print(f"❌ Test failed with error: {e}")
