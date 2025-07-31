@@ -53,7 +53,7 @@ A comprehensive FastAPI-based business management platform with advanced user ma
   - `v_option_pair_base`: Option pair analysis with risk calculations
 - **Multi-MongoDB Shell Support**: Compatible with both `mongosh` (v2.0+) and legacy `mongo` shell
 - **Error Handling**: Graceful fallback and detailed error reporting
-- **See [MONGODB_VIEWS_INTEGRATION.md](MONGODB_VIEWS_INTEGRATION.md) for detailed documentation**
+- **See [MONGODB_VIEWS_INTEGRATION.md](docs/MONGODB_VIEWS_INTEGRATION.md) for detailed documentation**
 
 ## Tech Stack
 
