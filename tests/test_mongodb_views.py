@@ -8,7 +8,7 @@ import asyncio
 import subprocess
 
 # Add the parent directory to the path to import from main.py
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 async def test_views_creation():
     """Test the MongoDB views creation function"""

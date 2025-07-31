@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 
 # Add the current directory to Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import connect_to_mongo, close_mongo_connection, get_database
 from models import (

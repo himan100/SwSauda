@@ -10,7 +10,7 @@ import random
 from decimal import Decimal
 
 # Add the project root to Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import db, connect_to_mongo
 from crud import create_order, get_user_by_email
