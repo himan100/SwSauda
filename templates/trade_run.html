@@ -211,6 +211,69 @@
                             </div>
                         </div>
                         
+                        <!-- Strategy Attachment Section -->
+                        <div class="bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6">
+                            <h3 class="text-sm font-semibold text-blue-800 mb-3">Attach Trading Strategies</h3>
+                            <p class="text-xs text-blue-700 mb-3">Attach automated trading strategies to this run</p>
+                            
+                            <div v-if="loadingStrategies" class="text-center py-2">
+                                <div class="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                                <p class="mt-1 text-blue-600 text-xs">Loading strategies...</p>
+                            </div>
+                            
+                            <div v-else-if="availableStrategies.length === 0" class="text-center py-2">
+                                <p class="text-blue-600 text-xs">No strategies available. Create strategies first.</p>
+                                <a href="/strategies" class="text-blue-800 hover:text-blue-900 text-xs font-medium">Go to Strategies</a>
+                            </div>
+                            
+                            <div v-else class="space-y-2">
+                                <select v-model="selectedStrategyId" class="w-full px-3 py-2 border border-blue-300 rounded-md text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                                    <option value="">Select a strategy to attach</option>
+                                    <option v-for="strategy in availableStrategies" :key="strategy.id" :value="strategy.id">
+                                        [[ strategy.name ]] ([[ strategy.status ]])
+                                    </option>
+                                </select>
+                                <button 
+                                    @click="attachStrategy"
+                                    :disabled="!selectedStrategyId || attachingStrategy"
+                                    class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center transition-colors duration-200"
+                                >
+                                    <span v-if="attachingStrategy" class="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
+                                    [[ attachingStrategy ? 'Attaching...' : 'Attach Strategy' ]]
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Attached Strategies -->
+                        <div v-if="attachedStrategies.length > 0" class="bg-green-50 p-4 rounded-lg border border-green-200 mb-6">
+                            <h3 class="text-sm font-semibold text-green-800 mb-3">Attached Strategies</h3>
+                            <div class="space-y-2">
+                                <div v-for="item in attachedStrategies" :key="item.execution.id" class="flex justify-between items-center p-2 bg-white rounded border">
+                                    <div>
+                                        <span class="text-sm font-medium text-gray-900">[[ item.strategy.name ]]</span>
+                                        <span 
+                                            :class="{
+                                                'bg-green-100 text-green-800': item.execution.status === 'running',
+                                                'bg-blue-100 text-blue-800': item.execution.status === 'completed',
+                                                'bg-orange-100 text-orange-800': item.execution.status === 'stopped',
+                                                'bg-red-100 text-red-800': item.execution.status === 'error'
+                                            }"
+                                            class="ml-2 px-2 py-1 text-xs font-medium rounded-full"
+                                        >
+                                            [[ item.execution.status ]]
+                                        </span>
+                                    </div>
+                                    <button 
+                                        @click="stopStrategyExecution(item.execution.id)"
+                                        :disabled="item.execution.status !== 'running'"
+                                        class="text-red-600 hover:text-red-800 text-xs font-medium disabled:opacity-50"
+                                    >
+                                        Stop
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
                         <!-- Stop Run Button -->
                         <div class="bg-red-50 p-4 rounded-lg border border-red-200">
                             <h3 class="text-sm font-semibold text-red-800 mb-2">Stop Trading Run</h3>
@@ -455,7 +518,13 @@ createApp({
             streamInterval: 1.0,  // Default interval in seconds
             actualInterval: 1.0,   // Actual interval being used by backend
             hoursForExpiry: null,   // Hours for expiry calculation
-            emaData: null // Data for EMA calculations
+            emaData: null, // Data for EMA calculations
+            // Strategy-related data
+            availableStrategies: [],
+            attachedStrategies: [],
+            selectedStrategyId: '',
+            loadingStrategies: false,
+            attachingStrategy: false
         }
     },
     mounted() {
@@ -463,6 +532,7 @@ createApp({
         this.loadDatabases();
         this.loadSelected();
         this.loadRunStatus();
+        this.loadStrategies();
     },
     watch: {
         selectedDatabase(newVal) {
@@ -485,12 +555,14 @@ createApp({
             // Handle WebSocket connection when run status changes
             if (newVal) {
                 // WebSocket connection will be handled in startRun method
+                this.loadAttachedStrategies();
             } else {
                 this.tickData = [];
                 this.totalTicks = 0;
                 this.optionTickData = [];
                 this.totalOptionTicks = 0;
                 this.emaData = null; // Clear EMA data when run stops
+                this.attachedStrategies = []; // Clear attached strategies
                 // WebSocket disconnection will be handled in stopRun method
             }
         }
@@ -755,7 +827,64 @@ createApp({
                 this.isWebSocketConnected = false;
             }
         },
-
+        
+        // Strategy-related methods
+        async loadStrategies() {
+            this.loadingStrategies = true;
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.get('/api/strategies?is_active=true&status=active', { headers: { Authorization: `Bearer ${token}` } });
+                this.availableStrategies = res.data.strategies;
+            } catch (e) {
+                console.error('Error loading strategies:', e);
+                this.availableStrategies = [];
+            } finally {
+                this.loadingStrategies = false;
+            }
+        },
+        
+        async loadAttachedStrategies() {
+            if (!this.isRunStarted) {
+                this.attachedStrategies = [];
+                return;
+            }
+            
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.get('/api/trade-run/attached-strategies', { headers: { Authorization: `Bearer ${token}` } });
+                this.attachedStrategies = res.data.executions;
+            } catch (e) {
+                console.error('Error loading attached strategies:', e);
+                this.attachedStrategies = [];
+            }
+        },
+        
+        async attachStrategy() {
+            if (!this.selectedStrategyId) return;
+            
+            this.attachingStrategy = true;
+            try {
+                const token = localStorage.getItem('token');
+                const res = await axios.post(`/api/trade-run/attach-strategy?strategy_id=${this.selectedStrategyId}`, {}, { headers: { Authorization: `Bearer ${token}` } });
+                this.message = res.data.message;
+                this.selectedStrategyId = '';
+                await this.loadAttachedStrategies();
+            } catch (e) {
+                this.message = e.response?.data?.detail || 'Error attaching strategy';
+            } finally {
+                this.attachingStrategy = false;
+            }
+        },
+        
+        async stopStrategyExecution(executionId) {
+            try {
+                const token = localStorage.getItem('token');
+                await axios.post(`/api/strategy-executions/${executionId}/stop`, {}, { headers: { Authorization: `Bearer ${token}` } });
+                await this.loadAttachedStrategies();
+            } catch (e) {
+                this.message = e.response?.data?.detail || 'Error stopping strategy execution';
+            }
+        },
 
         beforeUnmount() {
             // Clean up WebSocket when component is destroyed

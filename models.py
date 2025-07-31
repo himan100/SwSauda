@@ -188,3 +188,135 @@ class Parameter(ParameterBase):
     created_at: datetime
     updated_at: datetime
     created_by: str
+
+# Strategy Models
+class StrategyConditionType(str, Enum):
+    PRICE_ABOVE = "price_above"
+    PRICE_BELOW = "price_below"
+    PRICE_CROSSES_ABOVE = "price_crosses_above"
+    PRICE_CROSSES_BELOW = "price_crosses_below"
+    EMA_ABOVE = "ema_above"
+    EMA_BELOW = "ema_below"
+    EMA_CROSSES_ABOVE = "ema_crosses_above"
+    EMA_CROSSES_BELOW = "ema_crosses_below"
+    VOLUME_ABOVE = "volume_above"
+    VOLUME_BELOW = "volume_below"
+    TIME_AFTER = "time_after"
+    TIME_BEFORE = "time_before"
+    CUSTOM_INDICATOR = "custom_indicator"
+
+class StrategyActionType(str, Enum):
+    BUY_MARKET = "buy_market"
+    SELL_MARKET = "sell_market"
+    BUY_LIMIT = "buy_limit"
+    SELL_LIMIT = "sell_limit"
+    BUY_STOP = "buy_stop"
+    SELL_STOP = "sell_stop"
+    SET_STOP_LOSS = "set_stop_loss"
+    SET_TAKE_PROFIT = "set_take_profit"
+    CLOSE_POSITION = "close_position"
+    WAIT = "wait"
+    CUSTOM_ACTION = "custom_action"
+
+class StrategyStatus(str, Enum):
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ARCHIVED = "archived"
+
+class StrategyStepType(str, Enum):
+    CONDITION = "condition"
+    ACTION = "action"
+    LOOP = "loop"
+    BRANCH = "branch"
+
+class StrategyCondition(BaseModel):
+    condition_type: StrategyConditionType
+    symbol: Optional[str] = None
+    value: float
+    comparison_operator: str = ">="  # >=, <=, ==, !=, >, <
+    time_value: Optional[str] = None  # For time-based conditions
+    custom_indicator: Optional[str] = None  # For custom indicators
+    description: Optional[str] = None
+
+class StrategyAction(BaseModel):
+    action_type: StrategyActionType
+    symbol: Optional[str] = None
+    quantity: Optional[int] = None
+    price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    wait_seconds: Optional[int] = None  # For wait actions
+    custom_action: Optional[str] = None  # For custom actions
+    description: Optional[str] = None
+
+class StrategyStep(BaseModel):
+    step_id: str
+    step_type: StrategyStepType
+    step_order: int
+    condition: Optional[StrategyCondition] = None
+    action: Optional[StrategyAction] = None
+    next_step_id: Optional[str] = None  # For branching
+    loop_start_step_id: Optional[str] = None  # For loops
+    loop_end_step_id: Optional[str] = None  # For loops
+    loop_count: Optional[int] = None  # For loops
+    description: Optional[str] = None
+    is_enabled: bool = True
+
+class StrategyBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    status: StrategyStatus = StrategyStatus.DRAFT
+    symbols: List[str] = []  # List of symbols this strategy applies to
+    max_positions: Optional[int] = None  # Maximum concurrent positions
+    risk_per_trade: Optional[float] = None  # Risk percentage per trade
+    is_active: bool = True
+
+class StrategyCreate(StrategyBase):
+    steps: List[StrategyStep] = []
+
+class StrategyUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[StrategyStatus] = None
+    symbols: Optional[List[str]] = None
+    max_positions: Optional[int] = None
+    risk_per_trade: Optional[float] = None
+    is_active: Optional[bool] = None
+    steps: Optional[List[StrategyStep]] = None
+
+class Strategy(StrategyBase):
+    id: str
+    steps: List[StrategyStep] = []
+    created_at: datetime
+    updated_at: datetime
+    created_by: str
+
+class StrategyExecution(BaseModel):
+    strategy_id: str
+    trade_run_id: str  # Reference to the trade run
+    status: str = "running"  # running, completed, stopped, error
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    current_step_id: Optional[str] = None
+    execution_log: List[dict] = []  # Log of executed steps and actions
+    positions_opened: int = 0
+    positions_closed: int = 0
+    total_pnl: float = 0.0
+
+class StrategyExecutionCreate(BaseModel):
+    strategy_id: str
+    trade_run_id: str
+
+class StrategyExecutionUpdate(BaseModel):
+    status: Optional[str] = None
+    current_step_id: Optional[str] = None
+    completed_at: Optional[datetime] = None
+
+class StrategyResponse(BaseModel):
+    strategies: List[Strategy]
+    total_count: int
+
+class StrategyExecutionResponse(BaseModel):
+    executions: List[StrategyExecution]
+    total_count: int

@@ -17,11 +17,15 @@ from database import connect_to_mongo, connect_to_redis, close_mongo_connection,
 from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, 
                    TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse,
                    OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse,
-                   ParameterCreate, ParameterUpdate, Parameter)
+                   ParameterCreate, ParameterUpdate, Parameter, StrategyCreate, StrategyUpdate, Strategy, 
+                   StrategyResponse, StrategyExecutionCreate, StrategyExecutionUpdate, StrategyExecution, 
+                   StrategyExecutionResponse, StrategyStep, StrategyCondition, StrategyAction)
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import (create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin,
                  create_order, get_order_by_id, get_orders, update_order, delete_order,
-                 create_parameter, get_parameters, get_parameter_by_id, update_parameter, delete_parameter, get_parameter_categories, get_parameter_by_name)
+                 create_parameter, get_parameters, get_parameter_by_id, update_parameter, delete_parameter, get_parameter_categories, get_parameter_by_name,
+                 create_strategy, get_strategies, get_strategy_by_id, update_strategy, delete_strategy, get_strategies_by_symbol,
+                 create_strategy_execution, get_strategy_executions, get_strategy_execution_by_id, update_strategy_execution, add_execution_log, update_execution_stats)
 from config import settings
 
 # Store the currently selected database
@@ -443,178 +447,177 @@ db.createView(
             "$strkstep"
           ]
         }}
-      }}
-    }},
-    {{
-      $addFields: {{
-        levels: {{ $range: [0, 10, 1] }}
-      }}
-    }},
-    {{
-      $unwind: "$levels"
-    }},
-    {{
-      $addFields: {{
-        level: "$levels",
-        ce_strike: {{ $subtract: ["$ibase", {{ $multiply: ["$strkstep", "$levels"] }}] }},
-        pe_strike: {{ $add: ["$itop", {{ $multiply: ["$strkstep", "$levels"] }}] }}
-      }}
-    }},
-    {{
-      $lookup: {{
-        from: "Option",
-        let: {{ strike: "$ce_strike" }},
-        pipeline: [
-          {{
-            $match: {{
-              $expr: {{
-                $and: [
-                  {{ $eq: ["$strprc", "$$strike"] }},
-                  {{ $eq: ["$optt", "CE"] }}
-                ]
-              }}
-            }}
-          }}
-        ],
-        as: "ceOption"
-      }}
-    }},
-    {{
-      $lookup: {{
-        from: "Option",
-        let: {{ strike: "$pe_strike" }},
-        pipeline: [
-          {{
-            $match: {{
-              $expr: {{
-                $and: [
-                  {{ $eq: ["$strprc", "$$strike"] }},
-                  {{ $eq: ["$optt", "PE"] }}
-                ]
-              }}
-            }}
-          }}
-        ],
-        as: "peOption"
-      }}
-    }},
-    {{
-      $addFields: {{
-        ce_token: {{ $getField: {{ field: "token", input: {{ $arrayElemAt: ["$ceOption", 0] }} }} }},
-        ce_tsym: {{ $getField: {{ field: "tsym", input: {{ $arrayElemAt: ["$ceOption", 0] }} }} }},
-        pe_token: {{ $getField: {{ field: "token", input: {{ $arrayElemAt: ["$peOption", 0] }} }} }},
-        pe_tsym: {{ $getField: {{ field: "tsym", input: {{ $arrayElemAt: ["$peOption", 0] }} }} }}
-      }}
-    }},
-    {{
-      $unset: ["ceOption", "peOption"]
-    }},
-    {{
-      $lookup: {{
-        from: "OptionTick",
-        let: {{ ft: "$ft", token_var: "$ce_token" }},
-        pipeline: [
-          {{
-            $match: {{
-              $expr: {{
-                $and: [
-                  {{ $eq: ["$ft", "$$ft"] }},
-                  {{ $eq: ["$token", "$$token_var"] }}
-                ]
-              }}
-            }}
-          }}
-        ],
-        as: "ceTick"
-      }}
-    }},
-    {{
-      $lookup: {{
-        from: "OptionTick",
-        let: {{ ft: "$ft", token_var: "$pe_token" }},
-        pipeline: [
-          {{
-            $match: {{
-              $expr: {{
-                $and: [
-                  {{ $eq: ["$ft", "$$ft"] }},
-                  {{ $eq: ["$token", "$$token_var"] }}
-                ]
-              }}
-            }}
-          }}
-        ],
-        as: "peTick"
-      }}
-    }},
-    {{
-      $addFields: {{
-        ce_lp: {{ $getField: {{ field: "lp", input: {{ $arrayElemAt: ["$ceTick", 0] }} }} }},
-        pe_lp: {{ $getField: {{ field: "lp", input: {{ $arrayElemAt: ["$peTick", 0] }} }} }}
-      }}
-    }},
-    {{
-      $addFields: {{
-        sum_lp: {{ $round: [{{ $add: ["$ce_lp", "$pe_lp"] }}, 2] }},
-        diff: {{ $subtract: ["$pe_strike", "$ce_strike"] }}
-      }}
-    }},
-    {{
-      $addFields: {{
-        risk_prec: {{ 
-          $round: [
-            {{ 
-              $subtract: [
-                100, 
-                {{ 
-                  $multiply: [
-                    {{ 
-                      $cond: [
-                        {{ $eq: ["$sum_lp", 0] }}, 
-                        0, 
-                        {{ $divide: ["$diff", "$sum_lp"] }}
-                      ] 
-                    }}, 
-                    100
-                  ] 
+      }},
+      {{
+        $addFields: {{
+          levels: {{ $range: [0, 10, 1] }}
+        }}
+      }},
+      {{
+        $unwind: "$levels"
+      }},
+      {{
+        $addFields: {{
+          level: "$levels",
+          ce_strike: {{ $subtract: ["$ibase", {{ $multiply: ["$strkstep", "$levels"] }}] }},
+          pe_strike: {{ $add: ["$itop", {{ $multiply: ["$strkstep", "$levels"] }}] }}
+        }}
+      }},
+      {{
+        $lookup: {{
+          from: "Option",
+          let: {{ strike: "$ce_strike" }},
+          pipeline: [
+            {{
+              $match: {{
+                $expr: {{
+                  $and: [
+                    {{ $eq: ["$strprc", "$$strike"] }},
+                    {{ $eq: ["$optt", "CE"] }}
+                  ]
                 }}
-              ] 
-            }}, 
-            2
-          ] 
+              }}
+            }}
+          ],
+          as: "ceOption"
+        }}
+      }},
+      {{
+        $lookup: {{
+          from: "Option",
+          let: {{ strike: "$pe_strike" }},
+          pipeline: [
+            {{
+              $match: {{
+                $expr: {{
+                  $and: [
+                    {{ $eq: ["$strprc", "$$strike"] }},
+                    {{ $eq: ["$optt", "PE"] }}
+                  ]
+                }}
+              }}
+            }}
+          ],
+          as: "peOption"
+        }}
+      }},
+      {{
+        $addFields: {{
+          ce_token: {{ $getField: {{ field: "token", input: {{ $arrayElemAt: ["$ceOption", 0] }} }} }},
+          ce_tsym: {{ $getField: {{ field: "tsym", input: {{ $arrayElemAt: ["$ceOption", 0] }} }} }},
+          pe_token: {{ $getField: {{ field: "token", input: {{ $arrayElemAt: ["$peOption", 0] }} }} }},
+          pe_tsym: {{ $getField: {{ field: "tsym", input: {{ $arrayElemAt: ["$peOption", 0] }} }} }}
+        }}
+      }},
+      {{
+        $unset: ["ceOption", "peOption"]
+      }},
+      {{
+        $lookup: {{
+          from: "OptionTick",
+          let: {{ ft: "$ft", token_var: "$ce_token" }},
+          pipeline: [
+            {{
+              $match: {{
+                $expr: {{
+                  $and: [
+                    {{ $eq: ["$ft", "$$ft"] }},
+                    {{ $eq: ["$token", "$$token_var"] }}
+                  ]
+                }}
+              }}
+            }}
+          ],
+          as: "ceTick"
+        }}
+      }},
+      {{
+        $lookup: {{
+          from: "OptionTick",
+          let: {{ ft: "$ft", token_var: "$pe_token" }},
+          pipeline: [
+            {{
+              $match: {{
+                $expr: {{
+                  $and: [
+                    {{ $eq: ["$ft", "$$ft"] }},
+                    {{ $eq: ["$token", "$$token_var"] }}
+                  ]
+                }}
+              }}
+            }}
+          ],
+          as: "peTick"
+        }}
+      }},
+      {{
+        $addFields: {{
+          ce_lp: {{ $getField: {{ field: "lp", input: {{ $arrayElemAt: ["$ceTick", 0] }} }} }},
+          pe_lp: {{ $getField: {{ field: "lp", input: {{ $arrayElemAt: ["$peTick", 0] }} }} }}
+        }}
+      }},
+      {{
+        $addFields: {{
+          sum_lp: {{ $round: [{{ $add: ["$ce_lp", "$pe_lp"] }}, 2] }},
+          diff: {{ $subtract: ["$pe_strike", "$ce_strike"] }}
+        }}
+      }},
+      {{
+        $addFields: {{
+          risk_prec: {{ 
+            $round: [
+              {{ 
+                $subtract: [
+                  100, 
+                  {{ 
+                    $multiply: [
+                      {{ 
+                        $cond: [
+                          {{ $eq: ["$sum_lp", 0] }}, 
+                          0, 
+                          {{ $divide: ["$diff", "$sum_lp"] }}
+                        ] 
+                      }}, 
+                      100
+                    ] 
+                  }}
+                ] 
+              }}, 
+              2
+            ] 
+          }}
+        }}
+      }},
+      {{
+        $unset: ["ceTick", "peTick", "levels"]
+      }},
+      {{
+        $project: {{
+          level: 1,
+          ft: 1,
+          e: 1,
+          rt: 1,
+          lotsize: 1,
+          strkstep: 1,
+          ibase: "$ce_strike",
+          itop: "$pe_strike",
+          ilp: "$lp",
+          itoken: "$token",
+          its: "$ts",
+          ce_token: 1,
+          pe_token: 1,
+          ce_tsym: 1,
+          pe_tsym: 1,
+          ce_lp: 1,
+          pe_lp: 1,
+          sum_lp: 1,
+          risk_prec: 1
         }}
       }}
-    }},
-    {{
-      $unset: ["ceTick", "peTick", "levels"]
-    }},
-    {{
-      $project: {{
-        level: 1,
-        ft: 1,
-        e: 1,
-        rt: 1,
-        lotsize: 1,
-        strkstep: 1,
-        ibase: "$ce_strike",
-        itop: "$pe_strike",
-        ilp: "$lp",
-        itoken: "$token",
-        its: "$ts",
-        ce_token: 1,
-        pe_token: 1,
-        ce_tsym: 1,
-        pe_tsym: 1,
-        ce_lp: 1,
-        pe_lp: 1,
-        sum_lp: 1,
-        risk_prec: 1
-      }}
-    }}
-  ]
-);
+    ]
+  );
 
-print('v_option_pair_base view created successfully for database: {database_name}');
+  print('v_option_pair_base view created successfully for database: {database_name}');
 """
         
         # Create temporary script file
@@ -2564,6 +2567,627 @@ async def stream_ema_data(websocket: WebSocket, database_name: str, interval_sec
             
     except Exception as e:
         print(f"Error in EMA streaming: {e}")
+
+# Strategy API Endpoints
+@app.get("/strategies", response_class=HTMLResponse)
+async def strategies_page(request: Request):
+    return templates.TemplateResponse("strategies.html", {"request": request})
+
+@app.post("/api/strategies", response_model=Strategy)
+async def create_strategy_api(strategy: StrategyCreate, current_user: User = Depends(get_current_active_user)):
+    """Create a new trading strategy"""
+    try:
+        return await create_strategy(strategy, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating strategy: {str(e)}")
+
+@app.get("/api/strategies", response_model=StrategyResponse)
+async def get_strategies_api(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get all strategies with optional filtering"""
+    try:
+        strategies = await get_strategies(skip=skip, limit=limit, status=status, is_active=is_active)
+        total_count = len(strategies)  # In a real app, you'd get total count separately
+        return StrategyResponse(strategies=strategies, total_count=total_count)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching strategies: {str(e)}")
+
+@app.get("/api/strategies/{strategy_id}", response_model=Strategy)
+async def get_strategy_api(strategy_id: str, current_user: User = Depends(get_current_active_user)):
+    """Get a specific strategy by ID"""
+    try:
+        strategy = await get_strategy_by_id(strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        return strategy
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching strategy: {str(e)}")
+
+@app.put("/api/strategies/{strategy_id}", response_model=Strategy)
+async def update_strategy_api(
+    strategy_id: str,
+    strategy_update: StrategyUpdate,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update a strategy"""
+    try:
+        strategy = await update_strategy(strategy_id, strategy_update)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        return strategy
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating strategy: {str(e)}")
+
+@app.delete("/api/strategies/{strategy_id}")
+async def delete_strategy_api(strategy_id: str, current_user: User = Depends(get_current_active_user)):
+    """Delete a strategy"""
+    try:
+        success = await delete_strategy(strategy_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        return {"message": "Strategy deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting strategy: {str(e)}")
+
+@app.get("/api/strategies/symbol/{symbol}")
+async def get_strategies_by_symbol_api(symbol: str, current_user: User = Depends(get_current_active_user)):
+    """Get strategies that apply to a specific symbol"""
+    try:
+        strategies = await get_strategies_by_symbol(symbol)
+        return {"strategies": strategies, "total_count": len(strategies)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching strategies for symbol: {str(e)}")
+
+# Strategy Execution API Endpoints
+@app.post("/api/strategy-executions", response_model=StrategyExecution)
+async def create_strategy_execution_api(
+    execution: StrategyExecutionCreate,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Create a new strategy execution"""
+    try:
+        # Validate that the strategy exists
+        strategy = await get_strategy_by_id(execution.strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Validate that the strategy is active
+        if not strategy.is_active or strategy.status not in ["active", "draft"]:
+            raise HTTPException(status_code=400, detail="Strategy is not active")
+        
+        return await create_strategy_execution(execution)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating strategy execution: {str(e)}")
+
+@app.get("/api/strategy-executions", response_model=StrategyExecutionResponse)
+async def get_strategy_executions_api(
+    skip: int = 0,
+    limit: int = 100,
+    strategy_id: Optional[str] = None,
+    trade_run_id: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get strategy executions with optional filtering"""
+    try:
+        executions = await get_strategy_executions(
+            skip=skip, 
+            limit=limit, 
+            strategy_id=strategy_id, 
+            trade_run_id=trade_run_id
+        )
+        total_count = len(executions)  # In a real app, you'd get total count separately
+        return StrategyExecutionResponse(executions=executions, total_count=total_count)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching strategy executions: {str(e)}")
+
+@app.get("/api/strategy-executions/{execution_id}", response_model=StrategyExecution)
+async def get_strategy_execution_api(execution_id: str, current_user: User = Depends(get_current_active_user)):
+    """Get a specific strategy execution by ID"""
+    try:
+        execution = await get_strategy_execution_by_id(execution_id)
+        if not execution:
+            raise HTTPException(status_code=404, detail="Strategy execution not found")
+        return execution
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching strategy execution: {str(e)}")
+
+@app.put("/api/strategy-executions/{execution_id}", response_model=StrategyExecution)
+async def update_strategy_execution_api(
+    execution_id: str,
+    execution_update: StrategyExecutionUpdate,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update a strategy execution"""
+    try:
+        execution = await update_strategy_execution(execution_id, execution_update)
+        if not execution:
+            raise HTTPException(status_code=404, detail="Strategy execution not found")
+        return execution
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating strategy execution: {str(e)}")
+
+@app.post("/api/strategy-executions/{execution_id}/log")
+async def add_execution_log_api(
+    execution_id: str,
+    log_entry: dict,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Add a log entry to a strategy execution"""
+    try:
+        # Add timestamp to log entry
+        log_entry["timestamp"] = datetime.utcnow().isoformat()
+        log_entry["user_id"] = current_user.id
+        
+        success = await add_execution_log(execution_id, log_entry)
+        if not success:
+            raise HTTPException(status_code=404, detail="Strategy execution not found")
+        return {"message": "Log entry added successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding log entry: {str(e)}")
+
+@app.post("/api/strategy-executions/{execution_id}/stats")
+async def update_execution_stats_api(
+    execution_id: str,
+    positions_opened: int = 0,
+    positions_closed: int = 0,
+    total_pnl: float = 0.0,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update statistics for a strategy execution"""
+    try:
+        success = await update_execution_stats(
+            execution_id, 
+            positions_opened=positions_opened,
+            positions_closed=positions_closed,
+            total_pnl=total_pnl
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Strategy execution not found")
+        return {"message": "Statistics updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating statistics: {str(e)}")
+
+@app.post("/api/strategy-executions/{execution_id}/start")
+async def start_strategy_execution_api(
+    execution_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Start executing a strategy"""
+    try:
+        # Get the execution
+        execution = await get_strategy_execution_by_id(execution_id)
+        if not execution:
+            raise HTTPException(status_code=404, detail="Strategy execution not found")
+        
+        # Get the strategy
+        strategy = await get_strategy_by_id(execution.strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Check if strategy is active
+        if not strategy.is_active or strategy.status not in ["active", "draft"]:
+            raise HTTPException(status_code=400, detail="Strategy is not active")
+        
+        # Start execution
+        success = await strategy_engine.start_execution(execution_id, strategy, execution.trade_run_id)
+        if not success:
+            raise HTTPException(status_code=400, detail="Strategy execution is already running")
+        
+        return {"message": "Strategy execution started successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error starting strategy execution: {str(e)}")
+
+@app.post("/api/strategy-executions/{execution_id}/stop")
+async def stop_strategy_execution_api(
+    execution_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Stop executing a strategy"""
+    try:
+        # Stop execution
+        success = await strategy_engine.stop_execution(execution_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Strategy execution not found or not running")
+        
+        return {"message": "Strategy execution stopped successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error stopping strategy execution: {str(e)}")
+
+@app.post("/api/trade-run/attach-strategy")
+async def attach_strategy_to_trade_run_api(
+    strategy_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Attach a strategy to the current trade run"""
+    try:
+        # Check if there's an active trade run
+        run_database = selected_database_store.get("run_database")
+        if not run_database:
+            raise HTTPException(status_code=400, detail="No active trade run")
+        
+        # Get the strategy
+        strategy = await get_strategy_by_id(strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Check if strategy is active
+        if not strategy.is_active or strategy.status not in ["active", "draft"]:
+            raise HTTPException(status_code=400, detail="Strategy is not active")
+        
+        # Create strategy execution
+        execution = StrategyExecutionCreate(
+            strategy_id=strategy_id,
+            trade_run_id=run_database
+        )
+        
+        created_execution = await create_strategy_execution(execution)
+        
+        # Start the execution
+        await strategy_engine.start_execution(created_execution.id, strategy, run_database)
+        
+        return {
+            "message": f"Strategy '{strategy.name}' attached to trade run successfully",
+            "execution_id": created_execution.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error attaching strategy to trade run: {str(e)}")
+
+@app.get("/api/trade-run/attached-strategies")
+async def get_attached_strategies_api(current_user: User = Depends(get_current_active_user)):
+    """Get strategies attached to the current trade run"""
+    try:
+        # Check if there's an active trade run
+        run_database = selected_database_store.get("run_database")
+        if not run_database:
+            return {"executions": [], "total_count": 0}
+        
+        # Get executions for this trade run
+        executions = await get_strategy_executions(trade_run_id=run_database)
+        
+        # Get strategy details for each execution
+        result = []
+        for execution in executions:
+            strategy = await get_strategy_by_id(execution.strategy_id)
+            if strategy:
+                result.append({
+                    "execution": execution,
+                    "strategy": strategy
+                })
+        
+        return {
+            "executions": result,
+            "total_count": len(result)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting attached strategies: {str(e)}")
+
+# Strategy Execution Engine
+class StrategyExecutionEngine:
+    def __init__(self):
+        self.active_executions = {}  # execution_id -> execution_task
+        self.execution_data = {}  # execution_id -> execution state
+    
+    async def start_execution(self, execution_id: str, strategy: Strategy, trade_run_id: str):
+        """Start executing a strategy"""
+        if execution_id in self.active_executions:
+            return False  # Already running
+        
+        # Create execution task
+        task = asyncio.create_task(self._execute_strategy(execution_id, strategy, trade_run_id))
+        self.active_executions[execution_id] = task
+        self.execution_data[execution_id] = {
+            "current_step": 0,
+            "step_results": {},
+            "positions": [],
+            "last_tick_data": None
+        }
+        
+        return True
+    
+    async def stop_execution(self, execution_id: str):
+        """Stop executing a strategy"""
+        if execution_id in self.active_executions:
+            task = self.active_executions[execution_id]
+            task.cancel()
+            del self.active_executions[execution_id]
+            if execution_id in self.execution_data:
+                del self.execution_data[execution_id]
+            return True
+        return False
+    
+    async def _execute_strategy(self, execution_id: str, strategy: Strategy, trade_run_id: str):
+        """Main strategy execution loop"""
+        try:
+            # Update execution status to running
+            await update_strategy_execution(execution_id, StrategyExecutionUpdate(status="running"))
+            
+            # Add initial log entry
+            await add_execution_log(execution_id, {
+                "type": "execution_started",
+                "message": f"Strategy execution started for {strategy.name}",
+                "strategy_id": strategy.id,
+                "trade_run_id": trade_run_id
+            })
+            
+            # Main execution loop
+            step_index = 0
+            while step_index < len(strategy.steps):
+                step = strategy.steps[step_index]
+                
+                if not step.is_enabled:
+                    step_index += 1
+                    continue
+                
+                # Update current step
+                await update_strategy_execution(execution_id, StrategyExecutionUpdate(current_step_id=step.step_id))
+                
+                # Execute step based on type
+                if step.step_type == "condition":
+                    result = await self._evaluate_condition(step, execution_id)
+                    if result:
+                        step_index += 1  # Continue to next step
+                    else:
+                        # Condition failed, skip to next step or end
+                        step_index += 1
+                        
+                elif step.step_type == "action":
+                    result = await self._execute_action(step, execution_id)
+                    step_index += 1
+                    
+                elif step.step_type == "loop":
+                    # Handle loop logic
+                    step_index = await self._handle_loop(step, step_index, strategy.steps, execution_id)
+                    
+                elif step.step_type == "branch":
+                    # Handle branching logic
+                    step_index = await self._handle_branch(step, step_index, strategy.steps, execution_id)
+                
+                # Small delay to prevent overwhelming the system
+                await asyncio.sleep(0.1)
+            
+            # Execution completed
+            await update_strategy_execution(
+                execution_id, 
+                StrategyExecutionUpdate(
+                    status="completed",
+                    completed_at=datetime.utcnow()
+                )
+            )
+            
+            await add_execution_log(execution_id, {
+                "type": "execution_completed",
+                "message": f"Strategy execution completed for {strategy.name}"
+            })
+            
+        except asyncio.CancelledError:
+            # Execution was cancelled
+            await update_strategy_execution(
+                execution_id, 
+                StrategyExecutionUpdate(
+                    status="stopped",
+                    completed_at=datetime.utcnow()
+                )
+            )
+            await add_execution_log(execution_id, {
+                "type": "execution_stopped",
+                "message": f"Strategy execution stopped for {strategy.name}"
+            })
+        except Exception as e:
+            # Execution failed
+            await update_strategy_execution(
+                execution_id, 
+                StrategyExecutionUpdate(
+                    status="error",
+                    completed_at=datetime.utcnow()
+                )
+            )
+            await add_execution_log(execution_id, {
+                "type": "execution_error",
+                "message": f"Strategy execution failed: {str(e)}"
+            })
+    
+    async def _evaluate_condition(self, step: StrategyStep, execution_id: str) -> bool:
+        """Evaluate a strategy condition"""
+        try:
+            condition = step.condition
+            if not condition:
+                return False
+            
+            # Get current market data
+            current_data = await self._get_current_market_data(condition.symbol)
+            if not current_data:
+                return False
+            
+            result = False
+            
+            if condition.condition_type == "price_above":
+                result = current_data.get("price", 0) > condition.value
+            elif condition.condition_type == "price_below":
+                result = current_data.get("price", 0) < condition.value
+            elif condition.condition_type == "ema_above":
+                result = current_data.get("ema", 0) > condition.value
+            elif condition.condition_type == "ema_below":
+                result = current_data.get("ema", 0) < condition.value
+            # Add more condition types as needed
+            
+            # Log condition evaluation
+            await add_execution_log(execution_id, {
+                "type": "condition_evaluated",
+                "step_id": step.step_id,
+                "condition_type": condition.condition_type,
+                "symbol": condition.symbol,
+                "value": condition.value,
+                "current_data": current_data,
+                "result": result
+            })
+            
+            return result
+            
+        except Exception as e:
+            await add_execution_log(execution_id, {
+                "type": "condition_error",
+                "step_id": step.step_id,
+                "error": str(e)
+            })
+            return False
+    
+    async def _execute_action(self, step: StrategyStep, execution_id: str) -> bool:
+        """Execute a strategy action"""
+        try:
+            action = step.action
+            if not action:
+                return False
+            
+            # Log action execution
+            await add_execution_log(execution_id, {
+                "type": "action_executed",
+                "step_id": step.step_id,
+                "action_type": action.action_type,
+                "symbol": action.symbol,
+                "quantity": action.quantity,
+                "price": action.price
+            })
+            
+            # Execute the action based on type
+            if action.action_type == "buy_market":
+                # Place buy market order
+                await self._place_order("buy", "market", action.symbol, action.quantity, None, execution_id)
+            elif action.action_type == "sell_market":
+                # Place sell market order
+                await self._place_order("sell", "market", action.symbol, action.quantity, None, execution_id)
+            elif action.action_type == "buy_limit":
+                # Place buy limit order
+                await self._place_order("buy", "limit", action.symbol, action.quantity, action.price, execution_id)
+            elif action.action_type == "sell_limit":
+                # Place sell limit order
+                await self._place_order("sell", "limit", action.symbol, action.quantity, action.price, execution_id)
+            elif action.action_type == "wait":
+                # Wait for specified time
+                if action.wait_seconds:
+                    await asyncio.sleep(action.wait_seconds)
+            # Add more action types as needed
+            
+            return True
+            
+        except Exception as e:
+            await add_execution_log(execution_id, {
+                "type": "action_error",
+                "step_id": step.step_id,
+                "error": str(e)
+            })
+            return False
+    
+    async def _handle_loop(self, step: StrategyStep, current_index: int, steps: list, execution_id: str) -> int:
+        """Handle loop logic"""
+        # Simple loop implementation - can be enhanced
+        if step.loop_count and step.loop_count > 0:
+            # For now, just continue to next step
+            return current_index + 1
+        return current_index + 1
+    
+    async def _handle_branch(self, step: StrategyStep, current_index: int, steps: list, execution_id: str) -> int:
+        """Handle branching logic"""
+        # Simple branch implementation - can be enhanced
+        if step.next_step_id:
+            # Find the target step
+            for i, s in enumerate(steps):
+                if s.step_id == step.next_step_id:
+                    return i
+        return current_index + 1
+    
+    async def _get_current_market_data(self, symbol: str) -> dict:
+        """Get current market data for a symbol"""
+        try:
+            # Get the current run database
+            run_database = selected_database_store.get("run_database")
+            if not run_database:
+                return None
+            
+            # Get latest tick data from Redis
+            ticks = await get_ticks_from_redis(run_database, "indextick", 1)
+            if not ticks:
+                return None
+            
+            latest_tick = ticks[0]
+            
+            # Calculate EMAs if needed
+            ema_data = await calculate_index_emas(run_database)
+            
+            return {
+                "price": latest_tick.get("lp", 0),
+                "volume": latest_tick.get("volume", 0),
+                "ema_short": ema_data.get("short_ema", 0),
+                "ema_long": ema_data.get("long_ema", 0),
+                "timestamp": latest_tick.get("ft", 0)
+            }
+            
+        except Exception as e:
+            print(f"Error getting market data: {e}")
+            return None
+    
+    async def _place_order(self, side: str, order_type: str, symbol: str, quantity: int, price: float, execution_id: str):
+        """Place an order through the system"""
+        try:
+            # Create order through the existing order system
+            order_data = {
+                "symbol": symbol,
+                "quantity": quantity,
+                "side": side,
+                "order_type": order_type,
+                "price": price,
+                "user_id": "system"  # System user for strategy orders
+            }
+            
+            # This would integrate with the existing order system
+            # For now, just log the order
+            await add_execution_log(execution_id, {
+                "type": "order_placed",
+                "side": side,
+                "order_type": order_type,
+                "symbol": symbol,
+                "quantity": quantity,
+                "price": price
+            })
+            
+        except Exception as e:
+            await add_execution_log(execution_id, {
+                "type": "order_error",
+                "error": str(e)
+            })
+
+# Global strategy execution engine
+strategy_engine = StrategyExecutionEngine()
 
 if __name__ == "__main__":
     import uvicorn

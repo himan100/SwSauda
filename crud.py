@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 from database import get_database
-from models import UserCreate, UserUpdate, UserInDB, UserRole, OrderCreate, OrderUpdate, Order, OrderStatus, ParameterCreate, ParameterUpdate, Parameter
+from models import UserCreate, UserUpdate, UserInDB, UserRole, OrderCreate, OrderUpdate, Order, OrderStatus, ParameterCreate, ParameterUpdate, Parameter, StrategyCreate, StrategyUpdate, Strategy, StrategyExecutionCreate, StrategyExecutionUpdate, StrategyExecution
 from auth import get_password_hash, verify_password
 import bson
 
@@ -326,3 +326,216 @@ async def get_parameter_categories() -> List[str]:
     db = await get_database()
     categories = await db.parameters.distinct("category")
     return [cat for cat in categories if cat]  # Filter out None values
+
+# Strategy CRUD Operations
+async def create_strategy(strategy: StrategyCreate, user_id: str) -> Strategy:
+    db = await get_database()
+    now = datetime.utcnow()
+    
+    strategy_data = {
+        "name": strategy.name,
+        "description": strategy.description,
+        "status": strategy.status,
+        "symbols": strategy.symbols,
+        "max_positions": strategy.max_positions,
+        "risk_per_trade": strategy.risk_per_trade,
+        "is_active": strategy.is_active,
+        "steps": [step.dict() for step in strategy.steps],
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user_id
+    }
+    
+    result = await db.strategies.insert_one(strategy_data)
+    strategy_data["id"] = str(result.inserted_id)
+    
+    return Strategy(**strategy_data)
+
+async def get_strategies(skip: int = 0, limit: int = 100, status: Optional[str] = None, is_active: Optional[bool] = None) -> List[Strategy]:
+    db = await get_database()
+    strategies = []
+    
+    filter_query = {}
+    if status:
+        filter_query["status"] = status
+    if is_active is not None:
+        filter_query["is_active"] = is_active
+    
+    cursor = db.strategies.find(filter_query).skip(skip).limit(limit).sort("created_at", -1)
+    async for strategy in cursor:
+        strategy["id"] = str(strategy["_id"])
+        strategies.append(Strategy(**strategy))
+    return strategies
+
+async def get_strategy_by_id(strategy_id: str) -> Optional[Strategy]:
+    db = await get_database()
+    try:
+        strategy = await db.strategies.find_one({"_id": bson.ObjectId(strategy_id)})
+        if strategy:
+            strategy["id"] = str(strategy["_id"])
+            return Strategy(**strategy)
+    except bson.errors.InvalidId:
+        pass
+    return None
+
+async def update_strategy(strategy_id: str, strategy_update: StrategyUpdate) -> Optional[Strategy]:
+    db = await get_database()
+    
+    update_data = {}
+    if strategy_update.name is not None:
+        update_data["name"] = strategy_update.name
+    if strategy_update.description is not None:
+        update_data["description"] = strategy_update.description
+    if strategy_update.status is not None:
+        update_data["status"] = strategy_update.status
+    if strategy_update.symbols is not None:
+        update_data["symbols"] = strategy_update.symbols
+    if strategy_update.max_positions is not None:
+        update_data["max_positions"] = strategy_update.max_positions
+    if strategy_update.risk_per_trade is not None:
+        update_data["risk_per_trade"] = strategy_update.risk_per_trade
+    if strategy_update.is_active is not None:
+        update_data["is_active"] = strategy_update.is_active
+    if strategy_update.steps is not None:
+        update_data["steps"] = [step.dict() for step in strategy_update.steps]
+    
+    if update_data:
+        update_data["updated_at"] = datetime.utcnow()
+        try:
+            result = await db.strategies.update_one(
+                {"_id": bson.ObjectId(strategy_id)},
+                {"$set": update_data}
+            )
+            if result.modified_count:
+                return await get_strategy_by_id(strategy_id)
+        except bson.errors.InvalidId:
+            pass
+    return None
+
+async def delete_strategy(strategy_id: str) -> bool:
+    db = await get_database()
+    try:
+        result = await db.strategies.delete_one({"_id": bson.ObjectId(strategy_id)})
+        return result.deleted_count > 0
+    except bson.errors.InvalidId:
+        return False
+
+async def get_strategies_by_symbol(symbol: str) -> List[Strategy]:
+    db = await get_database()
+    strategies = []
+    
+    cursor = db.strategies.find({
+        "symbols": symbol,
+        "is_active": True,
+        "status": {"$in": ["active", "draft"]}
+    }).sort("created_at", -1)
+    
+    async for strategy in cursor:
+        strategy["id"] = str(strategy["_id"])
+        strategies.append(Strategy(**strategy))
+    return strategies
+
+# Strategy Execution CRUD Operations
+async def create_strategy_execution(execution: StrategyExecutionCreate) -> StrategyExecution:
+    db = await get_database()
+    now = datetime.utcnow()
+    
+    execution_data = {
+        "strategy_id": execution.strategy_id,
+        "trade_run_id": execution.trade_run_id,
+        "status": "running",
+        "started_at": now,
+        "completed_at": None,
+        "current_step_id": None,
+        "execution_log": [],
+        "positions_opened": 0,
+        "positions_closed": 0,
+        "total_pnl": 0.0
+    }
+    
+    result = await db.strategy_executions.insert_one(execution_data)
+    execution_data["id"] = str(result.inserted_id)
+    
+    return StrategyExecution(**execution_data)
+
+async def get_strategy_executions(skip: int = 0, limit: int = 100, strategy_id: Optional[str] = None, trade_run_id: Optional[str] = None) -> List[StrategyExecution]:
+    db = await get_database()
+    executions = []
+    
+    filter_query = {}
+    if strategy_id:
+        filter_query["strategy_id"] = strategy_id
+    if trade_run_id:
+        filter_query["trade_run_id"] = trade_run_id
+    
+    cursor = db.strategy_executions.find(filter_query).skip(skip).limit(limit).sort("started_at", -1)
+    async for execution in cursor:
+        execution["id"] = str(execution["_id"])
+        executions.append(StrategyExecution(**execution))
+    return executions
+
+async def get_strategy_execution_by_id(execution_id: str) -> Optional[StrategyExecution]:
+    db = await get_database()
+    try:
+        execution = await db.strategy_executions.find_one({"_id": bson.ObjectId(execution_id)})
+        if execution:
+            execution["id"] = str(execution["_id"])
+            return StrategyExecution(**execution)
+    except bson.errors.InvalidId:
+        pass
+    return None
+
+async def update_strategy_execution(execution_id: str, execution_update: StrategyExecutionUpdate) -> Optional[StrategyExecution]:
+    db = await get_database()
+    
+    update_data = {}
+    if execution_update.status is not None:
+        update_data["status"] = execution_update.status
+    if execution_update.current_step_id is not None:
+        update_data["current_step_id"] = execution_update.current_step_id
+    if execution_update.completed_at is not None:
+        update_data["completed_at"] = execution_update.completed_at
+    
+    if update_data:
+        try:
+            result = await db.strategy_executions.update_one(
+                {"_id": bson.ObjectId(execution_id)},
+                {"$set": update_data}
+            )
+            if result.modified_count:
+                return await get_strategy_execution_by_id(execution_id)
+        except bson.errors.InvalidId:
+            pass
+    return None
+
+async def add_execution_log(execution_id: str, log_entry: dict) -> bool:
+    db = await get_database()
+    try:
+        result = await db.strategy_executions.update_one(
+            {"_id": bson.ObjectId(execution_id)},
+            {"$push": {"execution_log": log_entry}}
+        )
+        return result.modified_count > 0
+    except bson.errors.InvalidId:
+        return False
+
+async def update_execution_stats(execution_id: str, positions_opened: int = 0, positions_closed: int = 0, total_pnl: float = 0.0) -> bool:
+    db = await get_database()
+    try:
+        update_data = {}
+        if positions_opened != 0:
+            update_data["positions_opened"] = positions_opened
+        if positions_closed != 0:
+            update_data["positions_closed"] = positions_closed
+        if total_pnl != 0.0:
+            update_data["total_pnl"] = total_pnl
+        
+        if update_data:
+            result = await db.strategy_executions.update_one(
+                {"_id": bson.ObjectId(execution_id)},
+                {"$inc": update_data}
+            )
+            return result.modified_count > 0
+        return True
+    except bson.errors.InvalidId:
+        return False
