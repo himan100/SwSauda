@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBearer
@@ -966,6 +966,11 @@ app = FastAPI(title="SwSauda", version="1.0.0")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Favicon route
+@app.get("/favicon.png", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.png")
 
 # Templates
 templates = Jinja2Templates(directory="templates")
