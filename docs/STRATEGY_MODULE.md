@@ -310,14 +310,11 @@ strategy = StrategyCreate(
 
 ## Frontend Integration
 
-### Strategy Management Page
+### Strategy Management UI (Removed)
 
-The strategy management page (`/strategies`) provides:
+The former web UI page (`/strategies`) has been removed from the platform. Strategy operations are now performed exclusively through the documented REST API endpoints. This change reduces maintenance overhead and encourages automated / programmatic strategy management.
 
-1. **Strategy List**: View all strategies with filtering by status and active state
-2. **Strategy Creation**: Visual builder for creating new strategies
-3. **Strategy Editing**: Edit existing strategies with step-by-step configuration
-4. **Strategy Execution**: Monitor strategy executions and performance
+If any legacy reference attempts to render `strategies.html`, remove that reference (the template file has been deleted). All functionality described below (CRUD, execution, attachment) remains available via the API.
 
 ### Trade Run Integration
 

@@ -2574,9 +2574,6 @@ async def stream_ema_data(websocket: WebSocket, database_name: str, interval_sec
         print(f"Error in EMA streaming: {e}")
 
 # Strategy API Endpoints
-@app.get("/strategies", response_class=HTMLResponse)
-async def strategies_page(request: Request):
-    return templates.TemplateResponse("strategies.html", {"request": request})
 
 @app.post("/api/strategies", response_model=Strategy)
 async def create_strategy_api(strategy: StrategyCreate, current_user: User = Depends(get_current_active_user)):
