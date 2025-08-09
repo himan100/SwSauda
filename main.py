@@ -19,7 +19,8 @@ from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB,
                    OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse,
                    ParameterCreate, ParameterUpdate, Parameter, StrategyCreate, StrategyUpdate, Strategy, 
                    StrategyResponse, StrategyExecutionCreate, StrategyExecutionUpdate, StrategyExecution, 
-                   StrategyExecutionResponse, StrategyStep, StrategyCondition, StrategyAction)
+                   StrategyExecutionResponse, StrategyStep, StrategyCondition, StrategyAction,
+                   MLTrainRequest, MLTrainResponse, MLPredictResponse)
 from auth import create_access_token, get_current_active_user, get_super_admin_user, get_admin_user, get_password_hash, verify_password
 from crud import (create_user, get_users, update_user, delete_user, authenticate_user, create_super_admin,
                  create_order, get_order_by_id, get_orders, update_order, delete_order,
@@ -1341,6 +1342,10 @@ async def roles_page(request: Request):
 @app.get("/databases", response_class=HTMLResponse)
 async def databases_page(request: Request):
     return templates.TemplateResponse("databases.html", {"request": request})
+
+@app.get("/ml-training", response_class=HTMLResponse)
+async def ml_training_page(request: Request):
+    return templates.TemplateResponse("ml_training.html", {"request": request})
 
 @app.get("/trade-run", response_class=HTMLResponse)
 async def trade_run_page(request: Request):
@@ -3190,6 +3195,44 @@ class StrategyExecutionEngine:
 
 # Global strategy execution engine
 strategy_engine = StrategyExecutionEngine()
+
+# ------------------ ML Endpoints ------------------
+from fastapi import BackgroundTasks
+
+@app.post("/api/ml/train-index-model", response_model=MLTrainResponse)
+async def train_index_model_api(request: MLTrainRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_admin_user)):
+    """Train or retrain index trend model."""
+    try:
+        # Validate database exists
+        databases = await db.client.list_database_names()
+        if request.database_name not in databases:
+            return MLTrainResponse(status="error", message=f"Database {request.database_name} not found")
+        from ml.modeling import TrainConfig, train_index_model
+        cfg = TrainConfig(
+            database_name=request.database_name,
+            horizon_minutes=request.horizon_minutes,
+            lookback_minutes=request.lookback_minutes,
+            test_size=request.test_size
+        )
+        result = await train_index_model(cfg)
+        return MLTrainResponse(**result)
+    except Exception as e:
+        return MLTrainResponse(status="error", message=str(e))
+
+@app.get("/api/ml/predict-index-trend", response_model=MLPredictResponse)
+async def predict_index_trend_api(database_name: str, current_user: User = Depends(get_admin_user)):
+    """Predict future direction (up/down) for next horizon minutes based on latest data."""
+    try:
+        from ml.modeling import predict_index_direction
+        result = await predict_index_direction(database_name)
+        return MLPredictResponse(**result)
+    except Exception as e:
+        return MLPredictResponse(status="error", message=str(e))
+
+@app.get("/api/ml/model-status")
+async def ml_model_status(database_name: str, current_user: User = Depends(get_admin_user)):
+    from ml.modeling import get_model_status
+    return get_model_status(database_name)
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}ML Training - SwSauda{% endblock %}
+{% block content %}
+<div id="mlApp" class="py-6" v-cloak>
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <h1 class="text-2xl font-semibold text-gray-900">Index Trend Model</h1>
+    <p class="mt-2 text-sm text-gray-600">Train and run predictions using historical tick & option data.</p>
+  </div>
+
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 space-y-6">
+    <!-- Databases & Model Status -->
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-medium text-gray-900">Select Database</h2>
+        <button @click="loadDatabases" class="bg-primary text-white px-4 py-2 rounded hover:bg-secondary text-sm">Refresh</button>
+      </div>
+      <div v-if="dbLoading" class="text-center py-4 text-gray-500">Loading databases...</div>
+      <div v-else>
+        <div v-if="dbError" class="mb-4 p-3 text-xs rounded border bg-yellow-50 border-yellow-200 text-yellow-800">[[ dbError ]]</div>
+        <div v-if="databases.length===0" class="mb-4 p-3 rounded border border-dashed text-sm text-gray-600 bg-gray-50">
+          No databases detected. You can:
+          <ul class="list-disc ml-5 mt-2 space-y-1 text-xs">
+            <li>Restore a backup from Backups tab (creates prefixed database).</li>
+            <li>Or enter an existing database name below (must contain IndexTick & Option collections).</li>
+          </ul>
+        </div>
+        <div class="grid md:grid-cols-3 gap-4" v-if="databases.length>0">
+        <div v-for="database in databases" :key="database" class="border rounded p-3 flex flex-col" :class="database===form.database_name ? 'border-primary ring-1 ring-primary' : 'border-gray-200'">
+          <div class="flex-1">
+            <div class="font-semibold text-sm">[[ database ]]</div>
+          </div>
+          <button @click="selectDatabase(database)" class="mt-2 w-full text-xs px-2 py-1 rounded border" :class="database===form.database_name ? 'bg-primary text-white border-primary' : 'border-gray-300 hover:bg-gray-100'">Select</button>
+        </div>
+      </div>
+        <!-- Manual database input -->
+        <div class="mt-4 border-t pt-4">
+          <label class="block text-xs font-medium text-gray-600 mb-1">Manual Database Name</label>
+          <div class="flex gap-2">
+            <input v-model="manualDb" placeholder="e.g. sws_20250728" class="flex-1 border rounded px-2 py-1 text-sm" />
+            <button @click="useManualDatabase" :disabled="!manualDb" class="bg-primary disabled:opacity-50 text-white px-3 py-1 rounded text-xs">Use</button>
+          </div>
+          <div v-if="form.database_name" class="mt-2 text-xs text-gray-500">Active: [[ form.database_name ]]</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Training Config -->
+    <div class="bg-white shadow rounded-lg p-6">
+      <h2 class="text-lg font-medium text-gray-900 mb-4">Training Configuration</h2>
+      <div class="grid md:grid-cols-4 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Horizon (minutes)</label>
+          <input type="number" v-model.number="form.horizon_minutes" min="1" class="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Lookback (minutes)</label>
+          <input type="number" v-model.number="form.lookback_minutes" min="10" class="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Test Size</label>
+            <input type="number" step="0.05" v-model.number="form.test_size" min="0.05" max="0.5" class="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div class="flex items-end">
+          <button @click="trainModel" :disabled="!form.database_name || training" class="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-4 py-2 rounded text-sm flex items-center justify-center">
+            <span v-if="!training">Train Model</span>
+            <span v-else class="flex items-center"><span class="animate-spin h-4 w-4 border-b-2 border-white rounded-full mr-2"></span> Training...</span>
+          </button>
+        </div>
+      </div>
+      <div v-if="trainResponse" class="mt-4 p-3 rounded border text-sm" :class="trainResponse.status==='ok' ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'">
+        <div v-if="trainResponse.status==='ok'">✅ Trained. Accuracy: [[ (trainResponse.accuracy*100).toFixed(2) ]]% | Samples: [[ trainResponse.samples ]]</div>
+        <div v-else>❌ [[ trainResponse.message ]]</div>
+      </div>
+    </div>
+
+    <!-- Prediction -->
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-medium text-gray-900">Prediction</h2>
+        <button @click="predict" :disabled="!form.database_name || predicting" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2 rounded text-sm flex items-center">
+          <span v-if="!predicting">Get Prediction</span>
+          <span v-else class="flex items-center"><span class="animate-spin h-4 w-4 border-b-2 border-white rounded-full mr-2"></span> Predicting...</span>
+        </button>
+      </div>
+      <div v-if="modelStatus.exists" class="mb-4 text-xs text-gray-600">Model trained at [[ modelStatus.trained_at ]] | Accuracy: [[ (modelStatus.accuracy*100).toFixed(2) ]]%</div>
+      <div v-else class="mb-4 text-xs text-gray-500">No trained model yet.</div>
+      <div v-if="prediction" class="p-4 border rounded bg-gray-50">
+        <div class="text-sm">Future Direction (next [[ form.horizon_minutes ]]m): <span :class="prediction.prediction===1 ? 'text-green-600' : 'text-red-600'">[[ prediction.prediction===1 ? 'UP' : 'DOWN' ]]</span></div>
+        <div class="text-xs mt-1">Prob Up: [[ (prediction.probabilities.up*100).toFixed(2) ]]% | Prob Down: [[ (prediction.probabilities.down*100).toFixed(2) ]]%</div>
+        <div class="text-xs mt-1">Current Price: [[ prediction.price ]] | Minutes to Expiry: [[ prediction.minutes_to_expiry ?? 'NA' ]]</div>
+        <div class="text-xs mt-1">Timestamp ft: [[ prediction.ft ]]</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div v-if="toast.show" :class="toast.type==='success' ? 'bg-green-500' : 'bg-red-500'" class="fixed top-4 right-4 text-white px-4 py-2 rounded shadow">[[ toast.message ]]</div>
+</div>
+{% endblock %}
+{% block extra_scripts %}
+<script>
+const { createApp } = Vue;
+createApp({
+  delimiters:['[[',']]'],
+  data(){return{
+    databases:[], dbLoading:false,
+    form:{ database_name:'', horizon_minutes:5, lookback_minutes:60, test_size:0.2 },
+    training:false, predicting:false,
+    trainResponse:null, prediction:null,
+    modelStatus:{exists:false},
+  toast:{show:false,message:'',type:'success'},
+  dbError:null,
+  manualDb:''
+  }},
+  mounted(){ const t=localStorage.getItem('token'); if(!t){ window.location='/login'; return;} this.loadDatabases(); },
+  methods:{
+    authHeader(){ const t=localStorage.getItem('token'); return { Authorization:`Bearer ${t}`}; },
+    async loadDatabases(){
+      this.dbLoading=true; this.dbError=null; this.databases=[];
+      try{
+        const r=await axios.get('/api/databases',{headers:this.authHeader()});
+        this.databases=r.data.databases||[];
+        if(this.databases.length===0){
+          // Fallback to prefixed endpoint
+          try {
+            const r2=await axios.get('/api/databases/prefixed',{headers:this.authHeader()});
+            this.databases=r2.data.databases||[];
+          } catch(err2){ /* ignore */ }
+        }
+        if(this.databases.length===0){
+            this.dbError='No user databases found. Restore a backup or manually enter a database name below.';
+        }
+      }catch(e){
+        if(e.response?.status===401 || e.response?.status===403){
+          this.dbError='Not authorized to list databases (admin role required). You may enter a database name manually.';
+        } else {
+          this.dbError='Error loading databases: '+(e.response?.data?.detail||e.message);
+        }
+      } finally { this.dbLoading=false; }
+    },
+    selectDatabase(db){ this.form.database_name=db; this.getModelStatus(); this.prediction=null; },
+    async trainModel(){
+      this.training=true; this.trainResponse=null; try{ const r=await axios.post('/api/ml/train-index-model', this.form,{headers:this.authHeader()}); this.trainResponse=r.data; if(r.data.status==='ok'){ this.toastMsg('Model trained','success'); this.getModelStatus(); } else { this.toastMsg(r.data.message||'Training failed','error'); } }catch(e){ this.toastMsg(e.response?.data?.detail||e.message,'error'); } finally{ this.training=false; }
+    },
+    async predict(){
+      if(!this.form.database_name) return; this.predicting=true; try{ const r=await axios.get('/api/ml/predict-index-trend',{ params:{ database_name:this.form.database_name }, headers:this.authHeader()}); if(r.data.status==='ok'){ this.prediction=r.data; } else { this.toastMsg(r.data.message||'Prediction failed','error'); } }catch(e){ this.toastMsg(e.response?.data?.detail||e.message,'error'); } finally{ this.predicting=false; }
+    },
+    async getModelStatus(){ if(!this.form.database_name) return; try{ const r=await axios.get('/api/ml/model-status',{ params:{ database_name:this.form.database_name }, headers:this.authHeader()}); this.modelStatus=r.data; }catch(e){ this.modelStatus={exists:false}; } },
+  useManualDatabase(){ if(!this.manualDb) return; this.form.database_name=this.manualDb.trim(); this.getModelStatus(); this.prediction=null; this.toastMsg('Using '+this.form.database_name,'success'); },
+    toastMsg(msg,type){ this.toast={show:true,message:msg,type}; setTimeout(()=>this.toast.show=false,2500); }
+  }
+}).mount('#mlApp');
+</script>
+{% endblock %}

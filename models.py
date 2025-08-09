@@ -320,3 +320,27 @@ class StrategyResponse(BaseModel):
 class StrategyExecutionResponse(BaseModel):
     executions: List[StrategyExecution]
     total_count: int
+
+# ML Models
+class MLTrainRequest(BaseModel):
+    database_name: str
+    horizon_minutes: int = 5
+    lookback_minutes: int = 60
+    test_size: float = 0.2
+
+class MLTrainResponse(BaseModel):
+    status: str
+    message: Optional[str] = None
+    samples: Optional[int] = None
+    features: Optional[List[str]] = None
+    accuracy: Optional[float] = None
+    model_path: Optional[str] = None
+
+class MLPredictResponse(BaseModel):
+    status: str
+    message: Optional[str] = None
+    prediction: Optional[int] = None  # 0=down,1=up
+    probabilities: Optional[dict] = None
+    ft: Optional[int] = None
+    price: Optional[float] = None
+    minutes_to_expiry: Optional[float] = None
