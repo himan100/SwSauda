@@ -1,4 +1,9 @@
 from pydantic import BaseModel, EmailStr
+try:
+    # Pydantic v2 ConfigDict import (optional)
+    from pydantic import ConfigDict  # type: ignore
+except ImportError:  # pragma: no cover
+    ConfigDict = dict  # fallback for older versions
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -116,7 +121,8 @@ class OrderBase(BaseModel):
     order_type: OrderType
     price: Optional[float] = None
     trigger_price: Optional[float] = None
-    user_id: str
+    # Made optional so API callers don't need to send it; backend injects current user id
+    user_id: Optional[str] = None
 
 class OrderCreate(OrderBase):
     pass
@@ -329,6 +335,12 @@ class MLTrainRequest(BaseModel):
     test_size: float = 0.2
 
 class MLTrainResponse(BaseModel):
+    # Allow field name model_path without warning
+    try:
+        model_config = ConfigDict(protected_namespaces=())  # type: ignore
+    except Exception:  # pragma: no cover
+        class Config:
+            protected_namespaces = ()
     status: str
     message: Optional[str] = None
     samples: Optional[int] = None

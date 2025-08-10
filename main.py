@@ -1740,6 +1740,28 @@ async def get_redis_option_tokens(current_user: User = Depends(get_admin_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching Redis option tokens: {str(e)}")
 
+# Option symbols endpoint
+@app.get("/api/options")
+async def get_option_symbols(limit: int = 1000, current_user: User = Depends(get_current_active_user)):
+    """Return list of available option symbols from the Option collection of the active run database (falls back to default)."""
+    try:
+        run_db_name = selected_database_store.get("run_database")
+        # Use run database if available else default configured db
+        target_db = db.client[run_db_name] if run_db_name else db
+        # Projection to only necessary fields
+        cursor = target_db["Option"].find({}, {"token": 1, "tsym": 1, "strprc": 1, "optt": 1}).limit(limit)
+        options = []
+        async for doc in cursor:
+            options.append({
+                "token": doc.get("token"),
+                "tsym": doc.get("tsym"),
+                "strprc": doc.get("strprc"),
+                "optt": doc.get("optt")
+            })
+        return {"options": options, "count": len(options), "database_name": run_db_name or settings.database_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching option symbols: {str(e)}")
+
 @app.get("/api/run-status")
 async def get_run_status(current_user: User = Depends(get_admin_user)):
     """Get the current run status"""
@@ -2125,41 +2147,67 @@ async def download_parameter_template(current_user: User = Depends(get_current_a
 async def get_positions_api(current_user: User = Depends(get_current_active_user)):
     """Get positions for the current user"""
     try:
-        db_instance = await get_database()
-        
-        # First ensure the positions view exists
-        await execute_position_views_script()
-        
-        # Query the positions view
-        positions_cursor = db_instance.v_positions.find({"user_id": current_user.id})
-        positions = []
-        
-        async for position in positions_cursor:
-            # Convert MongoDB document to PositionSummary
-            position_data = {
-                "symbol": position.get("symbol", ""),
-                "total_buy_quantity": position.get("total_buy_quantity", 0),
-                "total_sell_quantity": position.get("total_sell_quantity", 0),
-                "net_position": position.get("net_position", 0),
-                "total_buy_value": position.get("total_buy_value", 0.0),
-                "total_sell_value": position.get("total_sell_value", 0.0),
-                "average_buy_price": position.get("average_buy_price"),
-                "average_sell_price": position.get("average_sell_price"),
-                "open_buy_orders": position.get("open_buy_orders", 0),
-                "open_sell_orders": position.get("open_sell_orders", 0),
-                "open_buy_quantity": position.get("open_buy_quantity", 0),
-                "open_sell_quantity": position.get("open_sell_quantity", 0),
-                "open_buy_avg_price": position.get("open_buy_avg_price"),
-                "open_sell_avg_price": position.get("open_sell_avg_price"),
-                "realized_pnl": position.get("realized_pnl", 0.0),
-                "unrealized_pnl": 0.0,  # TODO: Calculate based on current market price
-                "current_price": None  # TODO: Get from market data
-            }
-            positions.append(PositionSummary(**position_data))
-        
+        positions = await aggregate_positions(user_id=current_user.id)
         return PositionResponse(positions=positions, total_positions=len(positions))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
+
+async def aggregate_positions(user_id: str | None, raw: bool = False):
+    """Aggregate positions directly from orders collection.
+    Args:
+        user_id: filter by user if provided
+        raw: if True return list of dicts, else list of PositionSummary
+    """
+    db_instance = await get_database()
+    match_stage = {"$match": {}}
+    if user_id:
+        match_stage["$match"]["user_id"] = user_id
+    pipeline = [
+        match_stage,
+        {"$group": {
+            "_id": {"symbol": "$symbol", "user_id": "$user_id"},
+            "total_buy_quantity": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "filled"]}]}, "$filled_quantity", 0]}},
+            "total_sell_quantity": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "filled"]}]}, "$filled_quantity", 0]}},
+            "total_buy_value": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "filled"]}]}, {"$multiply": ["$filled_quantity", "$average_price"]}, 0]}},
+            "total_sell_value": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "filled"]}]}, {"$multiply": ["$filled_quantity", "$average_price"]}, 0]}},
+            "open_buy_orders": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "pending"]}]}, 1, 0]}},
+            "open_sell_orders": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "pending"]}]}, 1, 0]}},
+            "open_buy_quantity": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "pending"]}]}, {"$subtract": ["$quantity", "$filled_quantity"]}, 0]}},
+            "open_sell_quantity": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "pending"]}]}, {"$subtract": ["$quantity", "$filled_quantity"]}, 0]}},
+            "open_buy_value": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "buy"]}, {"$eq": ["$status", "pending"]}, {"$ne": ["$price", None]}]}, {"$multiply": [{"$subtract": ["$quantity", "$filled_quantity"]}, "$price"]}, 0]}},
+            "open_sell_value": {"$sum": {"$cond": [{"$and": [{"$eq": ["$side", "sell"]}, {"$eq": ["$status", "pending"]}, {"$ne": ["$price", None]}]}, {"$multiply": [{"$subtract": ["$quantity", "$filled_quantity"]}, "$price"]}, 0]}}
+        }},
+        {"$addFields": {
+            "symbol": "$_id.symbol",
+            "user_id": "$_id.user_id",
+            "net_position": {"$subtract": ["$total_buy_quantity", "$total_sell_quantity"]},
+            "average_buy_price": {"$cond": [{"$gt": ["$total_buy_quantity", 0]}, {"$divide": ["$total_buy_value", "$total_buy_quantity"]}, None]},
+            "average_sell_price": {"$cond": [{"$gt": ["$total_sell_quantity", 0]}, {"$divide": ["$total_sell_value", "$total_sell_quantity"]}, None]},
+            "open_buy_avg_price": {"$cond": [{"$gt": ["$open_buy_quantity", 0]}, {"$divide": ["$open_buy_value", "$open_buy_quantity"]}, None]},
+            "open_sell_avg_price": {"$cond": [{"$gt": ["$open_sell_quantity", 0]}, {"$divide": ["$open_sell_value", "$open_sell_quantity"]}, None]},
+            "realized_pnl": {"$cond": [
+                {"$and": [{"$gt": ["$total_buy_quantity", 0]}, {"$gt": ["$total_sell_quantity", 0]}]},
+                {"$multiply": [
+                    {"$min": ["$total_buy_quantity", "$total_sell_quantity"]},
+                    {"$subtract": [
+                        {"$divide": ["$total_sell_value", "$total_sell_quantity"]},
+                        {"$divide": ["$total_buy_value", "$total_buy_quantity"]}
+                    ]}
+                ]},
+                0
+            ]}
+        }},
+        {"$project": {"_id": 0}}
+    ]
+    cursor = db_instance.orders.aggregate(pipeline)
+    results = []
+    async for doc in cursor:
+        doc["unrealized_pnl"] = 0.0
+        doc["current_price"] = None
+        results.append(doc)
+    if raw:
+        return results
+    return [PositionSummary(**r) for r in results]
 
 async def execute_position_views_script():
     """Execute the MongoDB position views script"""
@@ -2356,38 +2404,14 @@ async def execute_position_views_script():
 async def broadcast_positions_update():
     """Broadcast position updates to all connected WebSocket clients"""
     try:
-        # Get all users' positions (you might want to filter by user in a real implementation)
-        db_instance = await get_database()
-        positions_cursor = db_instance.v_positions.find({})
-        positions = []
-        
-        async for position in positions_cursor:
-            position_data = {
-                "symbol": position.get("symbol", ""),
-                "user_id": position.get("user_id", ""),
-                "total_buy_quantity": position.get("total_buy_quantity", 0),
-                "total_sell_quantity": position.get("total_sell_quantity", 0),
-                "net_position": position.get("net_position", 0),
-                "total_buy_value": position.get("total_buy_value", 0.0),
-                "total_sell_value": position.get("total_sell_value", 0.0),
-                "average_buy_price": position.get("average_buy_price"),
-                "average_sell_price": position.get("average_sell_price"),
-                "open_buy_orders": position.get("open_buy_orders", 0),
-                "open_sell_orders": position.get("open_sell_orders", 0),
-                "open_buy_quantity": position.get("open_buy_quantity", 0),
-                "open_sell_quantity": position.get("open_sell_quantity", 0),
-                "open_buy_avg_price": position.get("open_buy_avg_price"),
-                "open_sell_avg_price": position.get("open_sell_avg_price"),
-                "realized_pnl": position.get("realized_pnl", 0.0),
-                "unrealized_pnl": 0.0,
-                "current_price": None
-            }
-            positions.append(position_data)
-        
+        # Aggregate for all users
+        positions = await aggregate_positions(user_id=None, raw=True)
+
         # Get recent orders
         orders = await get_orders(limit=50)
-        orders_data = [
-            {
+        orders_data = []
+        for order in orders:
+            orders_data.append({
                 "id": order.id,
                 "symbol": order.symbol,
                 "quantity": order.quantity,
@@ -2398,25 +2422,19 @@ async def broadcast_positions_update():
                 "status": order.status,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
                 "average_price": order.average_price
-            }
-            for order in orders
-        ]
-        
+            })
+
         # Broadcast to all connected clients
-        message = json.dumps({
+        await positions_manager.broadcast(json.dumps({
             "type": "positions_update",
             "positions": positions
-        })
-        await positions_manager.broadcast(message)
-        
-        orders_message = json.dumps({
-            "type": "orders_update", 
+        }))
+        await positions_manager.broadcast(json.dumps({
+            "type": "orders_update",
             "orders": orders_data
-        })
-        await positions_manager.broadcast(orders_message)
-        
-    except Exception as e:
-        print(f"Error broadcasting positions update: {e}")
+        }))
+    except Exception as exc:
+        print(f"Error broadcasting positions update: {exc}")
 
 @app.websocket("/ws/tick-data")
 async def websocket_tick_data(websocket: WebSocket):
