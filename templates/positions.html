@@ -32,6 +32,21 @@
         50% { opacity: 0.5; }
     }
     [v-cloak] { display: none; }
+    /* Flash highlight for changing values */
+    .flash-up {
+        animation: flashUp 0.6s ease;
+    }
+    .flash-down {
+        animation: flashDown 0.6s ease;
+    }
+    @keyframes flashUp {
+        0% { background-color: rgba(16,185,129,0.35); }
+        100% { background-color: transparent; }
+    }
+    @keyframes flashDown {
+        0% { background-color: rgba(239,68,68,0.35); }
+        100% { background-color: transparent; }
+    }
 </style>
 {% endblock %}
 
@@ -87,8 +102,11 @@
                     </svg>
                 </div>
                 <div class="ml-4">
-                    <p class="text-sm font-medium text-gray-500">Total P&L</p>
-                    <p class="text-2xl font-bold" :class="totalPnL >= 0 ? 'profit' : 'loss'" v-text="formatCurrency(totalPnL)"></p>
+                    <p class="text-sm font-medium text-gray-500">Total P&L (Realized + Unrealized)</p>
+                    <div class="flex items-baseline space-x-2">
+                        <p class="text-2xl font-bold" :class="totalCombinedPnL >= 0 ? 'profit' : 'loss'" v-text="formatCurrency(totalCombinedPnL)"></p>
+                        <p class="text-xs text-gray-500" v-text="'Real: ' + formatCurrency(totalPnL) + ' | Unrl: ' + formatCurrency(totalUnrealizedPnL)"></p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -135,7 +153,10 @@
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Net Position</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Buy Price</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Sell Price</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Price</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Realized P&L</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unrealized P&L</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total P&L</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Open Orders</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                     </tr>
@@ -156,12 +177,15 @@
                                 <span class="text-xs text-gray-500 ml-1" v-text="getPositionType(position.net_position)"></span>
                             </div>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" v-text="formatPrice(position.average_buy_price)"></td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" v-text="formatPrice(position.average_sell_price)"></td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm" :class="position.realized_pnl >= 0 ? 'profit' : 'loss'" v-text="formatCurrency(position.realized_pnl)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" :data-flash-key="position.symbol + '_average_buy_price'" v-text="formatPrice(animatedPositions[position.symbol]?.average_buy_price)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" :data-flash-key="position.symbol + '_average_sell_price'" v-text="formatPrice(animatedPositions[position.symbol]?.average_sell_price)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" :data-flash-key="position.symbol + '_current_price'" v-text="formatPrice(animatedPositions[position.symbol]?.current_price)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm" :data-flash-key="position.symbol + '_realized_pnl'" :class="(animatedPositions[position.symbol]?.realized_pnl || 0) >= 0 ? 'profit' : 'loss'" v-text="formatCurrency(animatedPositions[position.symbol]?.realized_pnl)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm" :data-flash-key="position.symbol + '_unrealized_pnl'" :class="(animatedPositions[position.symbol]?.unrealized_pnl || 0) >= 0 ? 'profit' : 'loss'" v-text="formatCurrency(animatedPositions[position.symbol]?.unrealized_pnl)"></td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm" :data-flash-key="position.symbol + '_total_pnl'" :class="(animatedPositions[position.symbol]?.total_pnl || 0) >= 0 ? 'profit' : 'loss'" v-text="formatCurrency(animatedPositions[position.symbol]?.total_pnl)"></td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            <span class="text-green-600" v-text="position.open_buy_orders"></span> / 
-                            <span class="text-red-600" v-text="position.open_sell_orders"></span>
+                            <span class="text-green-600" :data-flash-key="position.symbol + '_open_buy_orders'" v-text="Math.round(animatedPositions[position.symbol]?.open_buy_orders || 0)"></span> / 
+                            <span class="text-red-600" :data-flash-key="position.symbol + '_open_sell_orders'" v-text="Math.round(animatedPositions[position.symbol]?.open_sell_orders || 0)"></span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                             <button @click="createOrderForSymbol(position.symbol)" class="text-blue-600 hover:text-blue-900 mr-2">Trade</button>
@@ -314,6 +338,9 @@ createApp({
     data() {
         return {
             positions: [],
+            // internal maps for smooth animation
+            animatedPositions: {}, // symbol -> displayed numeric values
+            animationDuration: 400, // ms for tween
             orders: [],
             connectionStatus: 'connecting',
             websocket: null,
@@ -335,6 +362,12 @@ createApp({
     computed: {
         totalPnL() {
             return this.positions.reduce((sum, pos) => sum + (pos.realized_pnl || 0), 0);
+        },
+        totalUnrealizedPnL() {
+            return this.positions.reduce((sum, pos) => sum + (pos.unrealized_pnl || 0), 0);
+        },
+        totalCombinedPnL() {
+            return this.totalPnL + this.totalUnrealizedPnL;
         },
         totalOpenOrders() {
             return this.positions.reduce((sum, pos) => sum + pos.open_buy_orders + pos.open_sell_orders, 0);
@@ -380,7 +413,7 @@ createApp({
                 this.websocket.onmessage = (event) => {
                     const data = JSON.parse(event.data);
                     if (data.type === 'positions_update') {
-                        this.positions = data.positions;
+                        this.updatePositionsSmooth(data.positions);
                     } else if (data.type === 'orders_update') {
                         this.orders = data.orders;
                     }
@@ -402,12 +435,73 @@ createApp({
                 this.connectionStatus = 'disconnected';
             }
         },
+        updatePositionsSmooth(newPositions) {
+            const previousMap = Object.fromEntries(this.positions.map(p => [p.symbol, p]));
+            // Keep ordering stable: sort by symbol for now
+            newPositions.sort((a,b)=> a.symbol.localeCompare(b.symbol));
+            // Animate numeric fields
+            const numericFields = ['net_position','average_buy_price','average_sell_price','current_price','realized_pnl','unrealized_pnl','total_pnl','open_buy_orders','open_sell_orders'];
+            const now = performance.now();
+            newPositions.forEach(pos => {
+                const prev = previousMap[pos.symbol];
+                if (!prev) {
+                    // new symbol: initialize animated values directly
+                    this.animatedPositions[pos.symbol] = {};
+                    numericFields.forEach(f => {
+                        this.animatedPositions[pos.symbol][f] = pos[f] || 0;
+                    });
+                } else {
+                    if (!this.animatedPositions[pos.symbol]) this.animatedPositions[pos.symbol] = {};
+                    numericFields.forEach(f => {
+                        const fromVal = this.animatedPositions[pos.symbol][f] ?? prev[f] ?? 0;
+                        const toVal = pos[f] ?? 0;
+                        if (fromVal === toVal) {
+                            this.animatedPositions[pos.symbol][f] = toVal;
+                        } else {
+                            this.tweenValue(pos.symbol, f, fromVal, toVal, now);
+                            // Add flash class info
+                            this.flashChange(pos.symbol, f, toVal - fromVal);
+                        }
+                    });
+                }
+            });
+            this.positions = newPositions;
+        },
+        tweenValue(symbol, field, fromVal, toVal, startTime) {
+            const duration = this.animationDuration;
+            const animate = (t) => {
+                const elapsed = t - startTime;
+                const progress = Math.min(1, elapsed / duration);
+                // easeOutCubic
+                const eased = 1 - Math.pow(1 - progress, 3);
+                const current = fromVal + (toVal - fromVal) * eased;
+                if (!this.animatedPositions[symbol]) this.animatedPositions[symbol] = {};
+                this.animatedPositions[symbol][field] = current;
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    this.animatedPositions[symbol][field] = toVal; // snap end
+                }
+            };
+            requestAnimationFrame(animate);
+        },
+        flashChange(symbol, field, delta) {
+            // add a transient property to trigger class binding
+            const key = `${symbol}_${field}`;
+            const el = document.querySelector(`[data-flash-key='${key}']`);
+            if (el) {
+                el.classList.remove('flash-up','flash-down');
+                // Force reflow to restart animation
+                void el.offsetWidth;
+                el.classList.add(delta >=0 ? 'flash-up' : 'flash-down');
+            }
+        },
         async fetchPositions() {
             try {
                 const response = await axios.get('/api/positions', {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
                 });
-                this.positions = response.data.positions;
+                this.updatePositionsSmooth(response.data.positions || []);
             } catch (error) {
                 console.error('Error fetching positions:', error);
             }

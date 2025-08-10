@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from database import connect_to_mongo, connect_to_redis, close_mongo_connection, close_redis_connection, db, get_database, redis_client
 from models import (UserCreate, UserUpdate, LoginRequest, Token, User, UserInDB, ProfileUpdate, PasswordChange, 
                    TickData, OptionTickData, TickDataResponse, StartRunRequest, StartRunResponse,
-                   OrderCreate, OrderUpdate, Order, OrderStatus, PositionSummary, PositionResponse,
+                   OrderCreate, OrderUpdate, Order, OrderStatus, OrderType, PositionSummary, PositionResponse,
                    ParameterCreate, ParameterUpdate, Parameter, StrategyCreate, StrategyUpdate, Strategy, 
                    StrategyResponse, StrategyExecutionCreate, StrategyExecutionUpdate, StrategyExecution, 
                    StrategyExecutionResponse, StrategyStep, StrategyCondition, StrategyAction,
@@ -31,6 +31,79 @@ from config import settings
 
 # Store the currently selected database
 selected_database_store = {}
+
+# Latest last prices per symbol (index & option) updated from tick streams
+last_prices: dict[str, float] = {}
+
+# Lock to prevent concurrent order evaluation overlaps
+_order_eval_lock = asyncio.Lock()
+
+async def evaluate_and_execute_orders(symbol: str, last_price: float):
+    """Evaluate open orders and execute those whose conditions are met using the correct tick source.
+
+    All orders require a symbol match (case-insensitive). Option orders therefore fill only
+    on their own option ticks, not on index ticks. Market orders execute when a tick for
+    their symbol arrives. This assumes stored order.symbol matches incoming tick ts.
+    """
+    try:
+        async with _order_eval_lock:
+            database = await get_database()
+            cursor = database.orders.find({
+                "status": {"$in": [OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED]}
+            }).limit(500)
+            orders_to_fill = []
+            async for doc in cursor:
+                doc_symbol = doc.get("symbol")
+                side = doc.get("side")
+                otype = doc.get("order_type")
+                price = doc.get("price")
+                trigger_price = doc.get("trigger_price")
+                quantity = doc.get("quantity", 0)
+                filled_quantity = doc.get("filled_quantity", 0)
+
+                if filled_quantity >= quantity:
+                    continue
+
+                if not symbol or not doc_symbol or doc_symbol.upper() != symbol.upper():
+                    continue
+
+                should_fill = False
+                exec_price = last_price
+
+                if otype == OrderType.MARKET.value:
+                    should_fill = True
+                elif otype == "limit":
+                    if side == "buy" and price is not None and last_price <= price:
+                        should_fill = True
+                    elif side == "sell" and price is not None and last_price >= price:
+                        should_fill = True
+                elif otype in ("sl", "slm"):
+                    if side == "buy" and trigger_price is not None and last_price >= trigger_price:
+                        should_fill = True
+                    elif side == "sell" and trigger_price is not None and last_price <= trigger_price:
+                        should_fill = True
+
+                if should_fill:
+                    orders_to_fill.append({
+                        "_id": doc.get("_id"),
+                        "new_filled_quantity": quantity,
+                        "exec_price": exec_price
+                    })
+
+            for od in orders_to_fill:
+                try:
+                    await update_order(str(od["_id"]), OrderUpdate(
+                        status=OrderStatus.FILLED,
+                        filled_quantity=od["new_filled_quantity"],
+                        average_price=od["exec_price"]
+                    ))
+                except Exception as e:
+                    print(f"Error updating order {od['_id']}: {e}")
+
+        if orders_to_fill:
+            await broadcast_positions_update()
+    except Exception as e:
+        print(f"Order evaluation error: {e}")
 
 # Redis tick storage functions
 async def get_redis_tick_length() -> int:
@@ -783,6 +856,20 @@ class ConnectionManager:
                 
                 # Store index tick in Redis
                 await store_tick_in_redis(tick_dict, "indextick", database_name)
+
+                # Evaluate orders for this symbol
+                try:
+                    await evaluate_and_execute_orders(tick_dict.get("ts"), tick_dict.get("lp", 0.0))
+                except Exception as e:
+                    print(f"Order evaluation failed (initial stream) for {tick_dict.get('ts')}: {e}")
+                # Update last price and broadcast positions
+                sym_idx = tick_dict.get("ts")
+                if sym_idx:
+                    last_prices[sym_idx] = tick_dict.get("lp", 0.0)
+                try:
+                    await broadcast_positions_update()
+                except Exception as e:
+                    print(f"Positions broadcast error (initial index): {e}")
                 
                 # Calculate and broadcast EMA data
                 try:
@@ -823,6 +910,19 @@ class ConnectionManager:
                         
                         # Store option tick in Redis
                         await store_tick_in_redis(option_tick_dict, "optiontick", database_name)
+                        # Evaluate orders for option symbol
+                        try:
+                            await evaluate_and_execute_orders(option_tick_dict.get("ts"), option_tick_dict.get("lp", 0.0))
+                        except Exception as e:
+                            print(f"Order evaluation failed (option initial) for {option_tick_dict.get('ts')}: {e}")
+                        # Update last option price and broadcast
+                        sym_opt = option_tick_dict.get("ts")
+                        if sym_opt:
+                            last_prices[sym_opt] = option_tick_dict.get("lp", 0.0)
+                        try:
+                            await broadcast_positions_update()
+                        except Exception as e:
+                            print(f"Positions broadcast error (option initial): {e}")
                         option_count += 1
                     
                     if option_count > 0:
@@ -883,6 +983,20 @@ class ConnectionManager:
                     
                     # Store index tick in Redis
                     await store_tick_in_redis(tick_dict, "indextick", database_name)
+
+                    # Evaluate orders for this symbol
+                    try:
+                        await evaluate_and_execute_orders(tick_dict.get("ts"), tick_dict.get("lp", 0.0))
+                    except Exception as e:
+                        print(f"Order evaluation failed (monitoring) for {tick_dict.get('ts')}: {e}")
+                    # Update last price and broadcast
+                    sym_idx2 = tick_dict.get("ts")
+                    if sym_idx2:
+                        last_prices[sym_idx2] = tick_dict.get("lp", 0.0)
+                    try:
+                        await broadcast_positions_update()
+                    except Exception as e:
+                        print(f"Positions broadcast error (monitor index): {e}")
                     
                     # Calculate and broadcast EMA data
                     try:
@@ -923,6 +1037,19 @@ class ConnectionManager:
                             
                             # Store option tick in Redis
                             await store_tick_in_redis(option_tick_dict, "optiontick", database_name)
+                            # Evaluate orders for option symbol
+                            try:
+                                await evaluate_and_execute_orders(option_tick_dict.get("ts"), option_tick_dict.get("lp", 0.0))
+                            except Exception as e:
+                                print(f"Order evaluation failed (option monitoring) for {option_tick_dict.get('ts')}: {e}")
+                            # Update last price and broadcast
+                            sym_opt2 = option_tick_dict.get("ts")
+                            if sym_opt2:
+                                last_prices[sym_opt2] = option_tick_dict.get("lp", 0.0)
+                            try:
+                                await broadcast_positions_update()
+                            except Exception as e:
+                                print(f"Positions broadcast error (option monitor): {e}")
                             option_count += 1
                         
                         if option_count > 0:
@@ -962,6 +1089,25 @@ class ConnectionManager:
 # Create connection manager instances
 manager = ConnectionManager()
 positions_manager = ConnectionManager()
+positions_broadcast_task: asyncio.Task | None = None
+
+async def _positions_periodic_broadcaster():
+    """Periodically broadcast positions (with latest prices) while clients are connected."""
+    global positions_broadcast_task
+    try:
+        while positions_manager.active_connections:
+            try:
+                await broadcast_positions_update()
+            except Exception as e:
+                print(f"Periodic positions broadcast failed: {e}")
+            await asyncio.sleep(1)
+    finally:
+        positions_broadcast_task = None
+
+def _ensure_positions_broadcaster():
+    global positions_broadcast_task
+    if positions_broadcast_task is None or positions_broadcast_task.done():
+        positions_broadcast_task = asyncio.create_task(_positions_periodic_broadcaster())
 
 app = FastAPI(title="SwSauda", version="1.0.0")
 
@@ -2406,6 +2552,28 @@ async def broadcast_positions_update():
     try:
         # Aggregate for all users
         positions = await aggregate_positions(user_id=None, raw=True)
+        for p in positions:
+            sym = p.get("symbol")
+            lp = last_prices.get(sym)
+            if lp is not None:
+                p["current_price"] = lp
+                net = p.get("net_position", 0)
+                avg_buy = p.get("average_buy_price")
+                avg_sell = p.get("average_sell_price")
+                unreal = 0.0
+                if net > 0 and avg_buy is not None:
+                    unreal = (lp - avg_buy) * net
+                elif net < 0 and avg_sell is not None:
+                    unreal = (avg_sell - lp) * abs(net)
+                p["unrealized_pnl"] = round(unreal, 2)
+            else:
+                p.setdefault("current_price", None)
+                p.setdefault("unrealized_pnl", 0.0)
+            # Provide a convenience total P&L combining realized + unrealized
+            try:
+                p["total_pnl"] = round((p.get("realized_pnl") or 0) + (p.get("unrealized_pnl") or 0), 2)
+            except Exception:
+                p["total_pnl"] = p.get("realized_pnl", 0)
 
         # Get recent orders
         orders = await get_orders(limit=50)
@@ -2497,11 +2665,20 @@ async def websocket_positions(websocket: WebSocket):
     """WebSocket endpoint for real-time positions and orders updates"""
     await positions_manager.connect(websocket)
     try:
+        # Send an immediate snapshot so UI populates without waiting for next tick
+        try:
+            await broadcast_positions_update()
+        except Exception as snap_exc:
+            print(f"Initial positions snapshot broadcast failed: {snap_exc}")
+        # Ensure periodic broadcaster running
+        _ensure_positions_broadcaster()
         while True:
-            # Send periodic position updates
-            await asyncio.sleep(1)
-            # Keep the connection alive
-            await websocket.ping()
+            # Just keep connection alive; broadcaster sends updates
+            await asyncio.sleep(25)
+            try:
+                await websocket.ping()
+            except Exception:
+                break
     except WebSocketDisconnect:
         positions_manager.disconnect(websocket)
     except Exception as e:
