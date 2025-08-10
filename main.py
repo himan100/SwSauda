@@ -1362,7 +1362,24 @@ async def parameters_page(request: Request):
 @app.post("/api/trade-run")
 async def trade_run_api(database_name: str = Form(...), current_user: User = Depends(get_admin_user)):
     selected_database_store["selected"] = database_name
-    return {"message": f"Selected database set to {database_name}"}
+    # Clear existing orders and positions view when a new trade run starts
+    try:
+        db_instance = await get_database()
+        # Delete all orders
+        delete_result = await db_instance.orders.delete_many({})
+        # Drop positions view if exists so it will be recreated on next access
+        try:
+            await db_instance.drop_collection("v_positions")
+        except Exception:
+            pass
+        # Optionally broadcast an empty update so UI clears immediately
+        try:
+            await broadcast_positions_update()
+        except Exception as e:
+            print(f"Broadcast after clearing failed: {e}")
+        return {"message": f"Selected database set to {database_name}. Cleared {delete_result.deleted_count} orders and reset positions."}
+    except Exception as e:
+        return {"message": f"Selected database set to {database_name}, but failed to clear positions/orders: {e}"}
 
 @app.get("/api/selected-database")
 async def get_selected_database(current_user: User = Depends(get_admin_user)):
