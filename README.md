@@ -1,6 +1,9 @@
-# SwSauda - FastAPI Business Management Platform
+# FastAPI MongoDb Redis Trade Run With User and Roles Module - Trade Run from Mongo Backups
 
 A comprehensive FastAPI-based business management platform with advanced user management, role-based access control, and secure authentication.
+
+<img width="957" height="584" alt="image" src="https://github.com/user-attachments/assets/b77a422f-0f79-4a0b-b037-d1a44bc54b23" />
+
 
 ## Features
 
