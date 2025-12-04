@@ -67,9 +67,38 @@ A comprehensive FastAPI-based business management platform with advanced user ma
 
 ## Installation & Setup
 
+### Quick Start (Automated Setup)
+
+For the fastest setup experience, use the automated setup script:
+
+```bash
+# Make the script executable and run it
+chmod +x setup.sh
+./setup.sh
+```
+
+This will:
+- Check prerequisites (Docker, Python)
+- Create `.env` configuration file
+- Start MongoDB and Redis with Docker
+- Install Python dependencies
+- Verify all services are running
+
+Then start the application:
+```bash
+python3 main.py
+```
+
+### Manual Setup
+
+If you prefer manual setup, follow these steps:
+
 ### Prerequisites
 - Python 3.8+
-- MongoDB (local or cloud instance)
+- **Option 1 (Recommended): Docker & Docker Compose** for MongoDB and Redis
+- **Option 2: Local Installation**
+  - MongoDB (local or cloud instance)
+  - Redis server
 - pip (Python package manager)
 - MongoDB Database Tools (for backup/restore functionality)
   - `mongodump` and `mongorestore` commands must be available in PATH
@@ -85,12 +114,41 @@ git clone <repository-url>
 cd SwSauda
 ```
 
-### 2. Install Dependencies
+### 2. Setup MongoDB and Redis
+
+#### Option A: Using Docker (Recommended)
+```bash
+# Start MongoDB and Redis with Docker Compose
+docker-compose up -d
+
+# Verify services are running
+docker-compose ps
+```
+
+This will start:
+- MongoDB on port 27017
+- Redis on port 6379
+- MongoDB Express UI on port 8081 (optional)
+- Redis Commander UI on port 8082 (optional)
+
+See [DOCKER_SETUP.md](DOCKER_SETUP.md) for detailed Docker documentation.
+
+#### Option B: Local Installation
+Install and start MongoDB and Redis locally:
+```bash
+# Start MongoDB
+mongod
+
+# Start Redis (in another terminal)
+redis-server
+```
+
+### 3. Install Python Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
+### 4. Configure Environment
 
 #### Option A: Use the Secret Key Generator (Recommended)
 ```bash
@@ -115,16 +173,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 SUPER_ADMIN_EMAIL=admin@swsauda.com
 SUPER_ADMIN_PASSWORD=admin123
 DATABASE_PREFIX=nifty
-```
-
-### 4. Start MongoDB
-Make sure MongoDB is running on your system:
-```bash
-# For local MongoDB
-mongod
-
-# Or use MongoDB Atlas (cloud)
-# Update MONGODB_URL in .env file
 ```
 
 ### 5. Run the Application
