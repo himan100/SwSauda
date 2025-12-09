@@ -122,10 +122,10 @@ cd SwSauda
 #### Option A: Using Docker (Recommended)
 ```bash
 # Start MongoDB and Redis with Docker Compose
-docker-compose up -d
+docker compose up -d
 
 # Verify services are running
-docker-compose ps
+docker compose ps
 ```
 
 This will start:

@@ -1,4 +1,25 @@
 services:
+  web:
+    build: .
+    container_name: swsauda_web
+    restart: unless-stopped
+    ports:
+      - "8500:8000"
+    environment:
+      - MONGODB_URL=mongodb://admin:admin123@mongodb:27017
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_NAME=swsauda
+      - SECRET_KEY=UvSzS298jzuemMQgkqpwfI1zWh6m8YPB7wJ5wdezoLE=
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - HOST=0.0.0.0
+      - PORT=8000
+      - APP_ENV=production
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - swsauda_network
   mongodb:
     image: mongo:8.0
     container_name: swsauda_mongodb
@@ -34,7 +55,7 @@ services:
       - swsauda_network
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 3s
       retries: 5
